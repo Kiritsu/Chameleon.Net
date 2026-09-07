@@ -1,0 +1,28 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+artifacts/
+
+# .NET / IDE
+*.user
+*.suo
+.vs/
+.idea/
+*.DotSettings.user
+
+# Test / coverage
+[Tt]est[Rr]esults/
+*.trx
+*.coverage
+coverage*.json
+coverage*.xml
+coverage*.cobertura.xml
+
+# NuGet
+*.nupkg
+*.snupkg
+
+# OS
+Thumbs.db
+.DS_Store
