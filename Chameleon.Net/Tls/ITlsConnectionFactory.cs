@@ -1,0 +1,12 @@
+using Chameleon.Net.Profiles;
+using Chameleon.Net.Transport;
+
+namespace Chameleon.Net.Tls;
+
+/// <summary>Performs the profiled handshake over a transport stream. The seam that replaces SslStream.</summary>
+public interface ITlsConnectionFactory
+{
+    ValueTask<TlsConnection> ConnectAsync(ITransport transport, string host, int port, TlsProfile profile, CancellationToken cancellationToken);
+}
+
+public sealed record TlsConnection(Stream Stream, string? NegotiatedProtocol);
