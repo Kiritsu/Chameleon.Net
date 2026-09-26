@@ -8,6 +8,8 @@ using Chameleon.Net.Http.Http1;
 using Chameleon.Net.Profiles;
 using Chameleon.Net.Tls;
 using Chameleon.Net.Transport;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Chameleon.Net.WebSockets;
 
@@ -19,12 +21,39 @@ public sealed class ChameleonWebSocketConnector : IWebSocketConnector
         "Host", "Upgrade", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions", "Sec-WebSocket-Protocol");
 
     private readonly ITlsConnectionFactory _tlsConnectionFactory;
-    private readonly ITransport _transport;
+    private readonly ProxyRouting _routing;
+    private readonly TimeSpan _connectTimeout;
+    private readonly CookieContainer? _cookies;
+    private readonly ILogger _logger = NullLogger.Instance;
 
     /// <summary>Direct TCP, profile-driven TLS, OS trust store validation.</summary>
     public ChameleonWebSocketConnector()
-        : this(new BouncyCastleTlsConnectionFactory(), new TcpTransport())
+        : this(new ChameleonOptions())
     {
+    }
+
+    /// <summary>Uses <see cref="ChameleonOptions.Proxy"/>, <see cref="ChameleonOptions.CertificateValidator"/>, <see cref="ChameleonOptions.ConnectTimeout"/>
+    /// and <see cref="ChameleonOptions.Cookies"/>; the profile is chosen per call.</summary>
+    public ChameleonWebSocketConnector(ChameleonOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.TcpFingerprintApplicator is not null)
+        {
+            throw new NotSupportedException("TcpFingerprintApplicator is not supported yet.");
+        }
+
+        ProxyRouting.Validate(options.Proxy);
+        var random = new Org.BouncyCastle.Security.SecureRandom();
+        _tlsConnectionFactory = new BouncyCastleTlsConnectionFactory(
+            new ProfileTlsClientFactory(), new ClientHelloEncoder(random), options.CertificateValidator ?? new SystemCertificateValidator(), random)
+        {
+            ResumeSessions = options.TlsSessionResumption,
+            SessionCache = options.TlsSessionCache ?? new TlsSessionCache(),
+        };
+        _routing = new ProxyRouting(new TcpTransport(), options.Proxy);
+        _connectTimeout = options.ConnectTimeout;
+        _cookies = options.Cookies;
+        _logger = options.LoggerFactory?.CreateLogger(Log.Category) ?? NullLogger.Instance;
     }
 
     public ChameleonWebSocketConnector(ITlsConnectionFactory tlsConnectionFactory, ITransport transport)
@@ -33,7 +62,8 @@ public sealed class ChameleonWebSocketConnector : IWebSocketConnector
         ArgumentNullException.ThrowIfNull(transport);
 
         _tlsConnectionFactory = tlsConnectionFactory;
-        _transport = transport;
+        _routing = new ProxyRouting(transport, null);
+        _connectTimeout = Timeout.InfiniteTimeSpan;
     }
 
     public async Task<WebSocket> ConnectAsync(Uri uri, ClientProfile profile, ChameleonWebSocketOptions? options = null, CancellationToken cancellationToken = default)
@@ -46,10 +76,17 @@ public sealed class ChameleonWebSocketConnector : IWebSocketConnector
         }
 
         options ??= new ChameleonWebSocketOptions();
+        var httpUri = HttpEquivalent(uri);
+        var cookieHeader = _cookies is not null && !options.Headers.Any(static h => string.Equals(h.Key, "Cookie", StringComparison.OrdinalIgnoreCase))
+            ? _cookies.GetCookieHeader(httpUri)
+            : null;
         var key = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
-        var requestHead = BuildRequestHead(uri, profile, options, key);
+        // ws:// behind an HTTP proxy goes to the proxy in absolute form, as OkHttp sends any plain-http request.
+        var forwardProxy = _routing.ForwardProxyFor(httpUri);
+        var requestHead = BuildRequestHead(uri, profile, options, key, cookieHeader, forwardProxy is null ? null : httpUri, forwardProxy?.Authorization);
 
-        var stream = new HttpReadStream(await OpenStreamAsync(uri, profile, cancellationToken).ConfigureAwait(false));
+        var (connected, resumed) = await OpenStreamAsync(uri, httpUri, profile, forwardProxy, cancellationToken).ConfigureAwait(false);
+        var stream = new HttpReadStream(connected);
         try
         {
             Http1ResponseHead response;
@@ -61,7 +98,14 @@ public sealed class ChameleonWebSocketConnector : IWebSocketConnector
                 response = await stream.ReadResponseHeadAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            StoreCookies(httpUri, response);
+            if (response.StatusCode != (int)HttpStatusCode.SwitchingProtocols)
+            {
+                Log.WebSocketRejected(_logger, uri, response.StatusCode);
+            }
+
             var (subProtocol, deflate) = ValidateUpgrade(response, key, profile, options);
+            Log.WebSocketUpgraded(_logger, uri, profile.Identity.Name, resumed);
             return WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
             {
                 IsServer = false,
@@ -87,9 +131,33 @@ public sealed class ChameleonWebSocketConnector : IWebSocketConnector
         }
     }
 
-    private static byte[] BuildRequestHead(Uri uri, ClientProfile profile, ChameleonWebSocketOptions options, string key)
+    /// <summary>Cookie scoping and proxy selection use the http(s) form of the URI, as ClientWebSocket does.</summary>
+    private static Uri HttpEquivalent(Uri uri) => new UriBuilder(uri) { Scheme = uri.Scheme == "wss" ? "https" : "http", Port = HttpUris.Port(uri) }.Uri;
+
+    private void StoreCookies(Uri httpUri, Http1ResponseHead response)
     {
-        var headers = new List<KeyValuePair<string, string>>();
+        if (_cookies is null)
+        {
+            return;
+        }
+
+        foreach (var value in response.GetValues("Set-Cookie"))
+        {
+            try
+            {
+                _cookies.SetCookies(httpUri, value);
+            }
+            catch (CookieException)
+            {
+                // Malformed cookies are dropped, as browsers do.
+            }
+        }
+    }
+
+    private static byte[] BuildRequestHead(
+        Uri uri, ClientProfile profile, ChameleonWebSocketOptions options, string key, string? cookieHeader, Uri? absoluteTarget, string? proxyAuthorization)
+    {
+        var caller = new List<KeyValuePair<string, string>>();
         foreach (var header in options.Headers)
         {
             if (ReservedHeaders.Contains(header.Key))
@@ -97,49 +165,78 @@ public sealed class ChameleonWebSocketConnector : IWebSocketConnector
                 throw new ArgumentException($"'{header.Key}' is part of the WebSocket handshake and cannot be set.", nameof(options));
             }
 
-            headers.Add(header);
+            caller.Add(header);
         }
 
+        // OkHttp has no sub-protocol API: apps set the header themselves, so it sits with the caller's headers.
         if (options.SubProtocols.Count > 0)
         {
-            headers.Add(new("Sec-WebSocket-Protocol", string.Join(", ", options.SubProtocols)));
+            caller.Add(new("Sec-WebSocket-Protocol", string.Join(", ", options.SubProtocols)));
         }
 
-        headers.Add(new("Upgrade", "websocket"));
-        headers.Add(new("Connection", "Upgrade"));
-        headers.Add(new("Sec-WebSocket-Key", key));
-        headers.Add(new("Sec-WebSocket-Version", "13"));
+        var client = new List<KeyValuePair<string, string>>
+        {
+            new("Upgrade", "websocket"),
+            new("Connection", "Upgrade"),
+            new("Sec-WebSocket-Key", key),
+            new("Sec-WebSocket-Version", "13"),
+        };
         if (profile.WebSocket.PerMessageDeflateOffer is { } offer)
         {
-            headers.Add(new("Sec-WebSocket-Extensions", offer));
+            client.Add(new("Sec-WebSocket-Extensions", offer));
         }
 
-        headers.Add(new("Host", HttpUris.Authority(uri)));
-
-        foreach (var (name, value) in profile.Headers.DefaultHeaders)
+        client.Add(new("Host", HttpUris.Authority(uri)));
+        if (!string.IsNullOrEmpty(cookieHeader))
         {
-            if (!headers.Exists(header => string.Equals(header.Key, name, StringComparison.OrdinalIgnoreCase)))
+            client.Add(new("Cookie", cookieHeader));
+        }
+
+        foreach (var (name, value) in profile.Headers.DefaultsFor(RequestKind.WebSocket, http2: false))
+        {
+            if (!caller.Concat(client).Any(header => string.Equals(header.Key, name, StringComparison.OrdinalIgnoreCase)))
             {
-                headers.Add(new(name, value));
+                client.Add(new(name, value));
             }
         }
 
-        var ordered = HeaderOrdering.Order(headers, profile.WebSocket.HandshakeHeaderOrder, profile.Headers.Http1Casing);
-        return Http1RequestHead.Encode("GET", uri.PathAndQuery, ordered);
+        var ordered = HeaderOrdering.Order(caller, client, profile.WebSocket.HandshakeHeaderOrder, profile.Headers.Http1Casing, profile.Headers.OrderMode);
+        if (proxyAuthorization is not null)
+        {
+            ordered = [.. ordered, new("Proxy-Authorization", proxyAuthorization)];
+        }
+
+        return Http1RequestHead.Encode("GET", absoluteTarget?.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped) ?? uri.PathAndQuery, ordered);
     }
 
-    private async Task<Stream> OpenStreamAsync(Uri uri, ClientProfile profile, CancellationToken cancellationToken)
+    private async Task<(Stream Stream, bool Resumed)> OpenStreamAsync(Uri uri, Uri httpUri, ClientProfile profile, ForwardProxy? forwardProxy, CancellationToken cancellationToken)
     {
         var host = HttpUris.ConnectHost(uri);
         var port = HttpUris.Port(uri);
+        var transport = _routing.For(httpUri, profile);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(_connectTimeout);
 
-        if (!HttpUris.IsSecure(uri.Scheme))
+        TlsConnection connection;
+        try
         {
-            return await _transport.ConnectAsync(new DnsEndPoint(host, port), cancellationToken).ConfigureAwait(false);
+            if (!HttpUris.IsSecure(uri.Scheme))
+            {
+                var plain = forwardProxy is null
+                    ? await transport.ConnectAsync(new DnsEndPoint(host, port), timeout.Token).ConfigureAwait(false)
+                    : await forwardProxy.Transport.ConnectAsync(forwardProxy.Endpoint, timeout.Token).ConfigureAwait(false);
+                return (plain, false);
+            }
+
+            var tls = profile.WebSocket.Alpn is { } alpn ? profile.Tls.WithAlpn(alpn) : profile.Tls;
+            connection = await _tlsConnectionFactory.ConnectAsync(transport, host, port, tls, timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested && exception is not ArgumentException)
+        {
+            var reason = timeout.IsCancellationRequested ? new TimeoutException($"Connecting took longer than {_connectTimeout}.", exception) : exception;
+            throw new WebSocketException(WebSocketError.Faulted, $"Unable to connect to {host}:{port}.", reason);
         }
 
-        var tls = profile.WebSocket.Alpn is { } alpn ? profile.Tls.WithAlpn(alpn) : profile.Tls;
-        var connection = await _tlsConnectionFactory.ConnectAsync(_transport, host, port, tls, cancellationToken).ConfigureAwait(false);
         if (connection.NegotiatedProtocol is not (null or "http/1.1"))
         {
             await connection.Stream.DisposeAsync().ConfigureAwait(false);
@@ -147,7 +244,7 @@ public sealed class ChameleonWebSocketConnector : IWebSocketConnector
                 $"The server negotiated '{connection.NegotiatedProtocol}'; WebSockets need http/1.1. Restrict the profile's WebSocket ALPN to http/1.1.");
         }
 
-        return connection.Stream;
+        return (connection.Stream, connection.SessionResumed);
     }
 
     private static (string? SubProtocol, WebSocketDeflateOptions? Deflate) ValidateUpgrade(

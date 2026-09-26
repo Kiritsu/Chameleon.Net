@@ -14,6 +14,7 @@ internal sealed class LoopbackHttpServer : IAsyncDisposable
     private readonly ConcurrentBag<Task> _connections = [];
     private readonly Func<ServerRequest, Reply> _respond;
     private readonly Task _accepting;
+    private int _clientClosed;
 
     public LoopbackHttpServer(Func<ServerRequest, Reply> respond)
     {
@@ -25,6 +26,9 @@ internal sealed class LoopbackHttpServer : IAsyncDisposable
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
     public IReadOnlyList<ServerRequest> Requests => [.. _requests];
+
+    /// <summary>Connections the client closed (cleanly, between requests).</summary>
+    public int ClientClosedConnections => Volatile.Read(ref _clientClosed);
 
     public Uri Url(string pathAndQuery) => new($"http://127.0.0.1:{Port}{pathAndQuery}");
 
@@ -82,9 +86,12 @@ internal sealed class LoopbackHttpServer : IAsyncDisposable
                     return;
                 }
             }
+
+            Interlocked.Increment(ref _clientClosed);
         }
         catch (IOException)
         {
+            Interlocked.Increment(ref _clientClosed);
         }
     }
 

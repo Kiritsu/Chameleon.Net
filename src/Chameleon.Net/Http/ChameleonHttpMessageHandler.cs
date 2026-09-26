@@ -2,6 +2,8 @@ using System.Net;
 using Chameleon.Net.Profiles;
 using Chameleon.Net.Tls;
 using Chameleon.Net.Transport;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Org.BouncyCastle.Security;
 
 namespace Chameleon.Net.Http;
@@ -15,11 +17,13 @@ namespace Chameleon.Net.Http;
 public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
 {
     private const int MaxAttempts = 5;
+    private const int MaxRefusedStreamAttempts = 20;
 
     private readonly ConnectionPool _pool;
     private readonly bool _allowAutoRedirect;
     private readonly int _maxAutomaticRedirections;
     private readonly CookieContainer? _cookies;
+    private readonly ILogger _logger;
     private volatile bool _disposed;
 
     public ChameleonHttpMessageHandler(ClientProfile profile, ChameleonOptions? options = null)
@@ -34,10 +38,12 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
 
     private ChameleonHttpMessageHandler(ChameleonOptions options, IProfileSelector profileSelector)
     {
-        if (options.Proxy is not null || options.TcpFingerprintApplicator is not null)
+        if (options.TcpFingerprintApplicator is not null)
         {
-            throw new NotSupportedException("Proxy and TcpFingerprintApplicator are not supported yet.");
+            throw new NotSupportedException("TcpFingerprintApplicator is not supported yet.");
         }
+
+        ProxyRouting.Validate(options.Proxy);
 
         if (options.ConnectTimeout <= TimeSpan.Zero && options.ConnectTimeout != Timeout.InfiniteTimeSpan)
         {
@@ -54,9 +60,14 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
             new ProfileTlsClientFactory(),
             new ClientHelloEncoder(random),
             options.CertificateValidator ?? new SystemCertificateValidator(),
-            random);
+            random)
+        {
+            ResumeSessions = options.TlsSessionResumption,
+            SessionCache = options.TlsSessionCache ?? new TlsSessionCache(),
+        };
 
-        _pool = new ConnectionPool(profileSelector, tls, new TcpTransport(), options.ConnectTimeout);
+        _logger = options.LoggerFactory?.CreateLogger(Log.Category) ?? NullLogger.Instance;
+        _pool = new ConnectionPool(profileSelector, tls, new ProxyRouting(new TcpTransport(), options.Proxy), options.ConnectTimeout, _logger);
         _allowAutoRedirect = options.AllowAutoRedirect;
         _maxAutomaticRedirections = options.MaxAutomaticRedirections;
         _cookies = options.Cookies;
@@ -78,6 +89,7 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
             }
 
             response.Dispose();
+            Log.Redirecting(_logger, (int)response.StatusCode, target);
             PrepareRedirect(request, response.StatusCode, target);
             response = await SendOnceAsync(request, kind, cancellationToken).ConfigureAwait(false);
         }
@@ -114,6 +126,7 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
         var http2PriorKnowledge = uri.Scheme == "http" && request.Version.Major >= 2 && request.VersionPolicy == HttpVersionPolicy.RequestVersionExact;
 
         HttpResponseMessage response;
+        var refusals = 0;
         for (var attempt = 1; ; attempt++)
         {
             var connection = await _pool.RentAsync(origin, http2PriorKnowledge, cancellationToken).ConfigureAwait(false);
@@ -125,9 +138,19 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
             catch (StaleConnectionException exception)
             {
                 // The server provably didn't process the request (closed pooled connection, GOAWAY, REFUSED_STREAM): replay it.
-                if (attempt == MaxAttempts)
+                // Refused streams get their own, larger budget and a short pause: a server at its stream limit (Kestrel counts a
+                // stream until its app pipeline returns, a moment after END_STREAM) frees a slot soon. SocketsHttpHandler retries
+                // them without limit.
+                var refused = exception.InnerException is Http2.Http2RetryableException { RefusedStream: true };
+                if (refused ? ++refusals == MaxRefusedStreamAttempts : attempt - refusals == MaxAttempts)
                 {
                     throw new HttpRequestException(HttpRequestError.Unknown, $"{origin.Host} kept refusing the request.", exception.InnerException);
+                }
+
+                Log.Replaying(_logger, request.Method.Method, uri, exception.InnerException?.Message ?? exception.Message);
+                if (refused)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(refusals * 5), cancellationToken).ConfigureAwait(false);
                 }
             }
         }

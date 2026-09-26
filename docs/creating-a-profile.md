@@ -56,6 +56,31 @@ the profile's golden test.
 Capture **several** connections to the same host and diff them. What varies between captures is
 not profile data (see §3.4).
 
+**Browsers, without Wireshark** — this is how `Chromium152Windows` was built:
+
+1. Open `https://tls.peet.ws/api/all` in the browser. The JSON lists every ClientHello extension
+   *with its data* (groups, key shares, signature algorithms, ALPS, ECH), the HTTP/2 frames the
+   browser sent (SETTINGS, WINDOW_UPDATE, HEADERS with priority and header order) and the
+   JA3/JA4/Akamai strings to put in the golden test.
+2. From the devtools console of that page, `fetch("/api/all")` (and a POST) and read the echoed
+   HEADERS frame: that's the `RequestKind.Fetch` header order and defaults, which differ from a
+   navigation's.
+3. For HTTP/1.1 casing and the WebSocket handshake, serve a page from a local plain-HTTP server
+   that logs raw request heads, and have it fire a `fetch()`, a POST and a `new WebSocket(...)`.
+
+Use a fresh browser session: a second connection to the same host may resume the TLS session and
+carry `pre_shared_key` (41), which changes JA4 (see §3.4).
+
+**Installed browsers, scripted** — this is how `Firefox156Windows` was built. Start the browser
+headless with a throwaway profile directory and a remote-debugging port
+(`firefox --headless --no-remote --profile <empty dir> --remote-debugging-port 9333`), connect to
+`ws://127.0.0.1:9333/session` (WebDriver BiDi), then `browsingContext.navigate` to the pages above
+and `script.evaluate` `document.body.innerText` or a `fetch(...)`. Set
+`user_pref("devtools.jsonview.enabled", false)` in the profile's `user.js` so the JSON comes back as
+text. Launch it several times: each launch is a fresh TLS session, and the diff shows what varies.
+Headless doesn't change the TLS or HTTP/2 layers, but check the User-Agent (headless Chromium says
+`HeadlessChrome`).
+
 ## 3. Read the ClientHello into `TlsProfile`
 
 Open one ClientHello in Wireshark's packet details. Everything you need is under
@@ -81,20 +106,20 @@ matching record, in that order:
 | 5 | `StatusRequestExtension` | none |
 | 10 | `SupportedGroupsExtension` | group ids in order; drop GREASE, set `GreasePlacement.SupportedGroups` |
 | 11 | `EcPointFormatsExtension` | formats (almost always `[0]`) |
-| 13 | `SignatureAlgorithmsExtension` | scheme ids in order (`tls.handshake.sig_hash_alg`) |
+| 13 | `SignatureAlgorithmsExtension` | scheme ids in order (`tls.handshake.sig_hash_alg`); drop a leading GREASE, set `GreasePlacement.SignatureAlgorithms` |
 | 16 | `AlpnExtension` | protocol strings in order |
 | 18 | `SignedCertificateTimestampExtension` | none |
 | 21 | `PaddingExtension` | see §3.3 |
 | 23 | `ExtendedMasterSecretExtension` | none |
-| 27 | `CompressCertificateExtension` | algorithm ids (2 = brotli, 1 = zlib) |
+| 27 | `CompressCertificateExtension` | algorithm ids (2 = brotli, 1 = zlib, 3 = zstd — offered faithfully, but a server that picks zstd fails the handshake for now) |
 | 28 | `RecordSizeLimitExtension` | the limit |
 | 34 | `DelegatedCredentialsExtension` | scheme ids |
 | 35 | `SessionTicketExtension` | none on a fresh connection |
 | 43 | `SupportedVersionsExtension` | versions in order; drop GREASE, set `GreasePlacement.SupportedVersions` |
 | 45 | `PskKeyExchangeModesExtension` | modes (`[1]` = psk_dhe_ke) |
 | 51 | `KeyShareExtension` | the **groups** that carry a key share, in order (not the key bytes); drop GREASE, set `GreasePlacement.KeyShare` |
-| 17513 | `ApplicationSettingsExtension` | ALPS protocol list |
-| 65037 | `EncryptedClientHelloGreaseExtension` | none — Chrome's GREASE ECH |
+| 17513 / 17613 | `ApplicationSettingsExtension` | ALPS protocol list; pass `Codepoint: 17613` for the new codepoint (Chrome 131+) |
+| 65037 | `EncryptedClientHelloGreaseExtension` | GREASE ECH. Defaults are BoringSSL's (AES-128-GCM, payload 144/176/208/240); for NSS pass `AeadIds: [0x0001, 0x0003], PayloadLengths: [240]`. Read the AEAD (bytes 3–4) and payload length from several captures |
 | 65281 | `RenegotiationInfoExtension` | none |
 | `0x?a?a` | `GreaseExtension` | the body, copied from the capture (BoringSSL: first empty, last one byte `0x00`); keep it at the position it sat — the value is drawn per connection |
 | anything else | `RawExtension(type, body)` | copy the raw body bytes |
@@ -128,24 +153,27 @@ encoder or by BouncyCastle, never written into the profile:
   JA3 for Chrome is inherently unstable; JA4 (sorted) is what you match.
 - **`key_share` public keys, `client_random`, `session_id`** — generated per connection.
 - **`pre_shared_key` (41)** on a *second* connection to the same host. Capture fresh connections
-  (restart the client, or use a host it has not seen). Session resumption is out of scope for v1.
+  (restart the client, or use a host it has not seen). Don't list it in the profile: when a profile
+  has `PskKeyExchangeModesExtension`, Chameleon.Net resumes with tickets from earlier connections
+  (like BoringSSL, each ticket once) and appends `pre_shared_key` last on its own
+  (`ChameleonOptions.TlsSessionResumption` turns this off).
 - **`session_ticket` body** — present and empty on a fresh connection.
+- **GREASE ECH payload length** — BoringSSL picks 144, 176, 208 or 240 bytes per connection; the
+  encoder does the same.
 
-### 3.5 Check what BouncyCastle can actually negotiate
+### 3.5 Check what the handshake layer can negotiate
 
-Listing an extension is not the same as surviving the server's reply to it. None of the following
-is handled by Chameleon.Net yet; a profile that relies on them will emit the right fingerprint but
-can fail the handshake:
+Listing an extension is not the same as surviving the server's reply to it. Chameleon.Net fills
+these BouncyCastle 2.6 gaps itself, each checked live against Cloudflare and Google:
 
-- `compress_certificate` (27): the server may answer with a compressed Certificate message;
-  BouncyCastle 2.6 does not decode it.
-- `X25519MLKEM768` (0x11EC = 4588) in `key_share`: BouncyCastle 2.6 has ML-KEM but not the
-  hybrid group; it needs a custom agreement. Listing it in `supported_groups` only, without a
-  share, risks a HelloRetryRequest for it.
-- ALPS (17513) and ECH (65037): the server can answer them in EncryptedExtensions, which
-  BouncyCastle does not expect.
+- `X25519MLKEM768` (0x11EC = 4588), `SecP256r1MLKEM768`, `SecP384r1MLKEM1024` key shares.
+- `compress_certificate` (27) with brotli (2) or zlib (1). zstd (3) is **not** supported: a server
+  that picks it fails the handshake, so don't list 3 unless the target never selects it.
+- ALPS (17513 / 17613): when the server accepts it, the client answers with its (empty) settings
+  before Finished, as BoringSSL does.
+- GREASE ECH (65037): the server's retry configs in EncryptedExtensions are accepted and ignored.
 
-Note these in the profile's remarks, and run the live handshake (§7) against the real target.
+Anything else new: run the live handshake (§7) against the real target before trusting it.
 
 ## 4. HTTP/2 preface → `Http2Profile`
 
@@ -157,21 +185,27 @@ the first frames the client sends after the connection preface:
 
 - `http2.type == 4` SETTINGS: identifier/value pairs **in the order written** → `Http2SettingsFrame`
 - `http2.type == 8` WINDOW_UPDATE on stream 0: increment → `Http2WindowUpdateFrame`
-- `http2.type == 2` PRIORITY frames (Firefox sends several for streams 3–13) → `Http2PriorityFrame`
+- `http2.type == 2` PRIORITY frames (older Firefox sent several for streams 3–13; Firefox 156 sends none) → `Http2PriorityFrame`
 - first `http2.type == 1` HEADERS: pseudo-header order (`http2.header.name` starting with `:`) →
   `PseudoHeaderOrder`, and its priority fields if the PRIORITY flag is set → `Http2HeadersPriority`
+  (the record takes the wire weight, i.e. what tls.peet.ws shows minus 1). Chrome's weight follows
+  the request's urgency — 256 for a navigation, 220 for a `fetch()` — so put the per-kind values in
+  `HeadersPriorityOverrides`.
+- the stream id of that first HEADERS → `FirstStreamId` (Firefox uses 3, everyone else 1).
+
+tls.peet.ws (§2) shows all of this without key logging.
 
 **Android apps** cannot be key-logged, and a MITM proxy replaces the H2 stack. Two honest options:
 
 1. If you can point the app at a server you control, log the frames there (nghttp2's `nghttpd -v`
    prints every frame).
-2. Otherwise read the HTTP library's source. For OkHttp this is `Http2Connection.start()` and
-   `Http2Writer.settings()` (note the index remap: `INITIAL_WINDOW_SIZE` is stored at index 7 but
-   written as id 4, after `MAX_FRAME_SIZE`). Mark such values as *derived from source, not
-   captured* in the remarks — they are the first thing to verify when a capture becomes possible.
+2. Otherwise read the HTTP library's source. For OkHttp this is `Http2Connection.okHttpSettings` and
+   `start()` (only `INITIAL_WINDOW_SIZE` is set; it is stored at index 7 and `Http2Writer.settings()`
+   writes it as id 4). Mark such values as *derived from source, not captured* in the remarks —
+   they are the first thing to verify when a capture becomes possible.
 
-Compute the Akamai string from what you found and record it next to the JA3/JA4 as an expected
-value: `settings|window_update|priorities|pseudo-header letters`, e.g. `5:16384;4:16777216|16711681|0|m,p,a,s`.
+Record the expected Akamai string next to the JA3/JA4: `AkamaiFingerprint.Compute(profile.Http2)`
+gives `settings|window_update|priorities|pseudo-header letters`, e.g. `4:16777216|16711681|0|m,p,a,s`.
 
 ## 5. Headers → `HeaderProfile`
 
@@ -183,12 +217,23 @@ casing only matters on HTTP/1.1 (HTTP/2 lowercases everything).
   `Overrides` per `RequestKind`. `HeaderOrder` is the fallback.
 - Native clients: the order is deterministic from the library. OkHttp's `BridgeInterceptor`
   appends `Content-Type`, `Content-Length`/`Transfer-Encoding`, `Host`, `Connection`,
-  `Accept-Encoding`, `Cookie`, `User-Agent` after whatever the app set, in that order. Leave
-  `Overrides` empty.
+  `Accept-Encoding`, `Cookie`, `User-Agent` after whatever the app set, in that order — but only
+  the ones the app didn't set: an app-set `User-Agent` stays where the app put it. Leave
+  `Overrides` empty and set `OrderMode = HeaderOrderMode.CallerFirst`.
+
+`HeaderOrderMode.ProfileOrder` (the default) is the browser behaviour: every listed header takes its
+profile position, whoever set it.
 
 `DefaultHeaders` are the values the client sends when the caller sets nothing: `User-Agent`,
-`Accept`, `Accept-Language`, `Accept-Encoding`, `Sec-CH-UA*` for Chromium. Only advertise an
-`Accept-Encoding` the HTTP layer can decode (`gzip, deflate, br, zstd` for Chrome).
+`Accept`, `Accept-Language`, `Accept-Encoding`, `Sec-CH-UA*` for Chromium. Browsers send different
+defaults per request kind (a navigation's `Accept`/`Sec-Fetch-*` vs a `fetch()`'s, and a WebSocket
+handshake adds `Pragma`/`Cache-Control`): put them in `DefaultHeaderOverrides`. Headers a browser
+only sends over HTTP/2 (Chrome's `priority`) go in `Http2OnlyHeaders`. Name casing on HTTP/1.1
+comes from the spelling in the order list (`HeaderCasing.AsSpecified`): Chrome writes
+`User-Agent` but `sec-ch-ua`.
+
+Chameleon.Net decodes gzip, deflate and br. A server that picks `zstd` (Chrome advertises it) returns
+the body undecoded with `Content-Encoding: zstd` kept.
 
 For an *app-specific* profile (an app on top of OkHttp), copy the app's own `User-Agent` and
 extra headers here; the TLS and H2 layers stay those of the library.
@@ -202,7 +247,10 @@ Capture (or read) the Upgrade request:
   (Chrome: `permessage-deflate; client_max_window_bits`; OkHttp ≥ 4.9: `permessage-deflate`;
   null if the client does not offer compression)
 - ALPN on WebSocket connections, if it differs from ordinary requests → `Alpn`
-  (OkHttp forces `http/1.1`; recent Chrome and Firefox offer `h2` and may do RFC 8441)
+  (OkHttp forces `http/1.1`. Chrome uses `http/1.1` for WebSocket connections unless it can reuse
+  an HTTP/2 connection with RFC 8441, which Chameleon.Net doesn't implement; the Chromium profile's
+  `http/1.1` is assumed, not captured — the capture was over plain `ws://`)
+- the handshake's own default headers → `HeaderProfile.DefaultHeaderOverrides[RequestKind.WebSocket]`
 
 ## 7. Verify before shipping
 
@@ -238,6 +286,39 @@ and is the first thing to verify once a capture is available.
 | Signature algorithms | BoringSSL defaults (Conscrypt), 9 entries ending in `rsa_pkcs1_sha1` — not captured | JA4_r last segment `0403,0804,0401,0503,0805,0501,0806,0601,0201` |
 | ALPN | OkHttp `Protocol` list `h2, http/1.1`; `RealWebSocket` forces `http/1.1` | `AlpnExtension`, `WebSocketProfile.Alpn` |
 | Padding | BoringSSL rule | `PaddingExtension(512)` |
-| H2 preface | `Http2Connection.start()` / `Http2Writer.settings()` — derived from source | `5:16384;4:16777216\|16711681\|0\|m,p,a,s` |
-| Header order | `BridgeInterceptor` | `HeaderOrder`, no overrides |
+| H2 preface | `Http2Connection.okHttpSettings` / `start()`, checked against the 4.12.0 source | `4:16777216\|16711681\|0\|m,p,a,s` |
+| HPACK | `Hpack.Writer`: indexing choices, Huffman when shorter, table up to 16 KiB | `HpackEncoder` (not profile data) |
+| Header order | `BridgeInterceptor` | `HeaderOrder`, no overrides, `CallerFirst` |
 | WebSocket | `RealWebSocket.connect()` | header order, `permessage-deflate` |
+
+## Worked example: `BuiltInProfiles.Chromium152Windows`
+
+Captured on 2026-09-26 from Chromium 152.0.7977.130 on Windows with the browser method of §2.
+`Chromium152WindowsGoldenTests` replays every capture offline, and the explicit
+`EchoServiceSeesTheChromiumCapture` test checks that tls.peet.ws reports the same JA4, Akamai
+fingerprint and HEADERS priority for Chameleon.Net as it did for the browser.
+
+| Layer | Source | Result |
+|---|---|---|
+| ClientHello | tls.peet.ws `/api/all` | JA4 `t13d1516h2_8daaf6152771_806a8c22fdea`, Chrome shuffle, GREASE in 5 places |
+| HTTP/2 | tls.peet.ws `sent_frames` | `1:65536;2:0;4:6291456;6:262144\|15663105\|0\|m,a,s,p`; weight 256 navigation / 220 fetch |
+| Fetch headers | `fetch()` from the tls.peet.ws page, and from a local page over HTTP/1.1 | `HeaderOrder`, `DefaultHeaders` |
+| Navigation headers | the page load itself (HTTP/2 and HTTP/1.1) | `Overrides[Navigate]`, `DefaultHeaderOverrides[Navigate]` |
+| WebSocket | `new WebSocket(...)` from the local page | `HandshakeHeaderOrder`, `DefaultHeaderOverrides[WebSocket]` |
+| Not observed | client hints on navigations, Cookie positions, WebSocket ALPN | placed from Chrome's known behaviour; the order of client hints and Cookie was later confirmed on Edge 153 (`BuiltInProfiles.Edge153Windows`, same stack, captured with the scripted method over CDP) |
+| Adjusted | app-specific User-Agent tokens, the capturing user's Accept-Language | generic values |
+
+## Worked example: `BuiltInProfiles.Firefox156Windows`
+
+Captured on 2026-09-26 from Firefox 156.0.1 on Windows with the scripted method of §2 (headless,
+three fresh launches). `Firefox156WindowsGoldenTests` replays the captures offline, and the explicit
+`EchoServiceSeesTheFirefoxCapture` test checks that tls.peet.ws reports the same JA3, JA4, Akamai
+fingerprint, first stream id and HEADERS priority for Chameleon.Net as it did for the browser.
+
+| Layer | Source | Result |
+|---|---|---|
+| ClientHello | tls.peet.ws `/api/all`, 3 launches | JA3 `9d42e90b0225e779f03141ddcd699df2` (stable: NSS neither shuffles nor GREASEs), JA4 `t13d1517h2_8daaf6152771_3cbfd9057e0d`; three key shares (X25519MLKEM768, X25519, P-256); GREASE ECH with a random AEAD and a 240-byte payload |
+| HTTP/2 | tls.peet.ws `sent_frames` | `1:65536;2:0;4:131072;5:16384\|12517377\|0\|m,p,a,s`; first request on stream 3; weight 42 navigation / 22 fetch, not exclusive; `te: trailers` only on HTTP/2 |
+| Fetch, navigation, cookies | local page over HTTP/1.1 (the page sets a cookie) | one `HeaderOrder` fits every kind; Cookie right after Connection |
+| WebSocket | `new WebSocket(...)` from the local page | `HandshakeHeaderOrder`; Sec-Fetch-Mode `websocket`; plain `permessage-deflate` |
+| Not supported | delegated credentials, zstd certificate compression | offered like Firefox does; Cloudflare, Google, GitHub, mozilla.org and example.com don't use them on it |

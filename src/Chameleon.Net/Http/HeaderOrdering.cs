@@ -5,8 +5,33 @@ namespace Chameleon.Net.Http;
 
 internal static class HeaderOrdering
 {
-    /// <summary>Headers absent from <paramref name="order"/> come first, in their original order (OkHttp appends its own headers after the app's);
-    /// listed headers follow in profile order. Under <see cref="HeaderCasing.AsSpecified"/> listed names take the profile's spelling.</summary>
+    /// <param name="callerHeaders">Set by the application, in its order.</param>
+    /// <param name="clientHeaders">Added by the emulated client itself (framing, Host, defaults, cookies).</param>
+    public static List<KeyValuePair<string, string>> Order(
+        IEnumerable<KeyValuePair<string, string>> callerHeaders,
+        IEnumerable<KeyValuePair<string, string>> clientHeaders,
+        IReadOnlyList<string> order,
+        HeaderCasing casing,
+        HeaderOrderMode mode)
+    {
+        if (mode == HeaderOrderMode.ProfileOrder)
+        {
+            return Order(callerHeaders.Concat(clientHeaders), order, casing);
+        }
+
+        var ordered = callerHeaders
+            .Select(header =>
+            {
+                var rank = IndexOf(order, header.Key);
+                return new KeyValuePair<string, string>(ApplyCasing(header.Key, rank < 0 ? header.Key : order[rank], casing), header.Value);
+            })
+            .ToList();
+        ordered.AddRange(Order(clientHeaders, order, casing));
+        return ordered;
+    }
+
+    /// <summary>Headers absent from <paramref name="order"/> come first, in their original order; listed headers follow in profile order.
+    /// Under <see cref="HeaderCasing.AsSpecified"/> listed names take the profile's spelling.</summary>
     public static List<KeyValuePair<string, string>> Order(
         IEnumerable<KeyValuePair<string, string>> headers, IReadOnlyList<string> order, HeaderCasing casing)
     {

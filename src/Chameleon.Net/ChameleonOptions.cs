@@ -11,7 +11,9 @@ public sealed class ChameleonOptions
     /// <summary>Picks the profile for each new connection. Required unless the handler is given a single profile.</summary>
     public IProfileSelector? ProfileSelector { get; set; }
 
-    /// <summary>Not supported yet; setting it throws.</summary>
+    /// <summary>HTTP proxies tunnel https and wss with CONNECT and receive plain http and ws requests in absolute form, as OkHttp does; SOCKS5 proxies natively
+    /// (<c>socks5://user:pass@host:1080</c>). Credentials come from the proxy URI or <see cref="IWebProxy.Credentials"/> and are sent preemptively.
+    /// The TLS and HTTP fingerprints seen by the target are unchanged.</summary>
     public IWebProxy? Proxy { get; set; }
 
     /// <summary>TCP connect plus TLS handshake.</summary>
@@ -31,4 +33,12 @@ public sealed class ChameleonOptions
     public ITcpFingerprintApplicator? TcpFingerprintApplicator { get; set; }
 
     public ILoggerFactory? LoggerFactory { get; set; }
+
+    /// <summary>Resume TLS 1.3 sessions with tickets from earlier connections to the same host, as Chrome and OkHttp (Conscrypt) do.
+    /// Applies to profiles that list psk_key_exchange_modes. On by default; turn off to make every connection a full handshake.</summary>
+    public bool TlsSessionResumption { get; set; } = true;
+
+    /// <summary>Null (the default): each handler or connector keeps its own tickets. Give the handler and the WebSocket connector the same
+    /// instance to have them resume each other's sessions, like one OkHttpClient used for both.</summary>
+    public TlsSessionCache? TlsSessionCache { get; set; }
 }

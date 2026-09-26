@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using Chameleon.Net.Profiles;
+using Chameleon.Net.Transport;
 
 namespace Chameleon.Net.Http.Http1;
 
@@ -11,12 +12,16 @@ internal sealed class Http1Connection : IHttpConnection
 
     private readonly HttpReadStream _stream;
     private readonly Action<Http1Connection> _release;
+    private readonly ForwardProxy? _forwardProxy;
     private long _idleSince = Stopwatch.GetTimestamp();
     private bool _canReuse = true;
     private int _disposed;
 
-    public Http1Connection(Origin origin, ClientProfile profile, Stream stream, Action<Http1Connection> release)
+    /// <param name="forwardProxy">Set when <paramref name="stream"/> goes to an HTTP proxy rather than the origin: requests then use the
+    /// absolute form (<c>GET http://host/path</c>) and carry Proxy-Authorization, as OkHttp sends plain-http requests to a proxy.</param>
+    public Http1Connection(Origin origin, ClientProfile profile, Stream stream, Action<Http1Connection> release, ForwardProxy? forwardProxy = null)
     {
+        _forwardProxy = forwardProxy;
         Origin = origin;
         Profile = profile;
         _stream = new HttpReadStream(stream);
@@ -43,8 +48,13 @@ internal sealed class Http1Connection : IHttpConnection
         byte[] head;
         try
         {
-            plan = RequestHeaderBuilder.Build(request, Profile, kind, cookieHeader);
-            head = Http1RequestHead.Encode(request.Method.Method, request.RequestUri!.PathAndQuery, plan.Headers);
+            plan = RequestHeaderBuilder.Build(request, Profile, kind, cookieHeader, http2: false);
+            head = _forwardProxy is null
+                ? Http1RequestHead.Encode(request.Method.Method, request.RequestUri!.PathAndQuery, plan.Headers)
+                : Http1RequestHead.Encode(
+                    request.Method.Method,
+                    request.RequestUri!.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped),
+                    _forwardProxy.Authorization is { } authorization ? [.. plan.Headers, new("Proxy-Authorization", authorization)] : plan.Headers);
         }
         catch
         {
@@ -77,7 +87,7 @@ internal sealed class Http1Connection : IHttpConnection
             Abort();
             throw new OperationCanceledException("The request was canceled.", exception, cancellationToken);
         }
-        catch (IOException exception) when (WasReused && !headReceived && request.Content is null)
+        catch (IOException exception) when (WasReused && !headReceived && HttpContentReplay.IsReplayable(request.Content))
         {
             Abort();
             throw new StaleConnectionException(exception);

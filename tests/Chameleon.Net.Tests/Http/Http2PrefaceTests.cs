@@ -23,7 +23,7 @@ public sealed class Http2PrefaceTests
         Assert.Equal(
             [(Type: 4, Stream: 0), (Type: 8, Stream: 0), (Type: 1, Stream: 1)],
             capture.Frames.Select(static f => (Type: (int)f.Type, Stream: f.StreamId)));
-        Assert.Equal("000500004000000401000000", Convert.ToHexStringLower(capture.Frames[0].Payload));
+        Assert.Equal("000401000000", Convert.ToHexStringLower(capture.Frames[0].Payload));
         Assert.Equal(16711681, BinaryPrimitives.ReadInt32BigEndian(capture.Frames[1].Payload));
         Assert.Equal(0x1 | 0x4, capture.Frames[2].Flags);
 
@@ -31,8 +31,56 @@ public sealed class Http2PrefaceTests
         Assert.Equal([":method", ":path", ":authority", ":scheme", "x-app", "accept-encoding", "user-agent"], headers.Select(static h => h.Key));
         Assert.Equal("okhttp/4.12.0", headers[^1].Value);
 
-        Assert.Equal("5:16384;4:16777216|16711681|0|m,p,a,s", capture.Akamai);
+        Assert.Equal("4:16777216|16711681|0|m,p,a,s", capture.Akamai);
         Assert.Equal(AkamaiFingerprint.Compute(BuiltInProfiles.OkHttp4Android13.Http2), capture.Akamai);
+    }
+
+    [Fact]
+    public async Task ChromiumFetchHeadersFrameMatchesTheCapture()
+    {
+        var capture = await CaptureAsync(BuiltInProfiles.Chromium152Windows);
+
+        Assert.Equal("1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p", capture.Akamai);
+        var headers = capture.Frames[^1];
+        Assert.Equal(0x1 | 0x4 | 0x20, headers.Flags);
+        // Exclusive dependency on stream 0, weight 220 (wire 219 = 0xdb).
+        Assert.Equal("80000000db", Convert.ToHexStringLower(headers.Payload.AsSpan(0, 5)));
+        Assert.Equal(
+            [":method", ":authority", ":scheme", ":path", "sec-ch-ua-platform", "user-agent", "sec-ch-ua", "sec-ch-ua-mobile", "accept",
+                "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "accept-encoding", "accept-language", "priority"],
+            new HpackDecoder(4096).Decode(headers.Payload.AsSpan(5)).Select(static h => h.Key));
+    }
+
+    [Fact]
+    public async Task FirefoxNavigationHeadersFrameMatchesTheCapture()
+    {
+        var capture = await CaptureAsync(BuiltInProfiles.Firefox156Windows, static request => request.Options.Set(ChameleonRequestOptions.Kind, RequestKind.Navigate));
+
+        Assert.Equal("1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s", capture.Akamai);
+        var headers = capture.Frames[^1];
+        // Firefox starts at stream 3; weight 42 (wire 41 = 0x29) on stream 0, not exclusive.
+        Assert.Equal(3, headers.StreamId);
+        Assert.Equal(0x1 | 0x4 | 0x20, headers.Flags);
+        Assert.Equal("0000000029", Convert.ToHexStringLower(headers.Payload.AsSpan(0, 5)));
+        var decoded = new HpackDecoder(4096).Decode(headers.Payload.AsSpan(5));
+        Assert.Equal(
+            [":method", ":path", ":authority", ":scheme", "user-agent", "accept", "accept-language", "accept-encoding", "upgrade-insecure-requests",
+                "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-user", "priority", "te"],
+            decoded.Select(static h => h.Key));
+        Assert.Equal("trailers", decoded[^1].Value);
+    }
+
+    [Fact]
+    public async Task EdgeNavigationHeadersFrameMatchesTheCapture()
+    {
+        var capture = await CaptureAsync(BuiltInProfiles.Edge153Windows, static request => request.Options.Set(ChameleonRequestOptions.Kind, RequestKind.Navigate));
+
+        var headers = capture.Frames[^1];
+        Assert.Equal("80000000ff", Convert.ToHexStringLower(headers.Payload.AsSpan(0, 5)));
+        Assert.Equal(
+            [":method", ":authority", ":scheme", ":path", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "upgrade-insecure-requests", "user-agent",
+                "accept", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-user", "sec-fetch-dest", "accept-encoding", "accept-language", "priority"],
+            new HpackDecoder(4096).Decode(headers.Payload.AsSpan(5)).Select(static h => h.Key));
     }
 
     [Fact]

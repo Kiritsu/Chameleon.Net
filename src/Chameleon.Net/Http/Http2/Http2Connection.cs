@@ -1,10 +1,12 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using Chameleon.Net.Http.Http2.Hpack;
 using Chameleon.Net.Profiles;
+using Microsoft.Extensions.Logging;
 
 namespace Chameleon.Net.Http.Http2;
 
@@ -28,6 +30,7 @@ internal sealed class Http2Connection : IHttpConnection
     private readonly Queue<TaskCompletionSource> _slotWaiters = new();
     private readonly int _localMaxFrameSize;
     private readonly int _windowUpdateThreshold;
+    private readonly ILogger _logger;
 
     private TaskCompletionSource _flowChanged = NewSignal();
     private long _connectionSendWindow = Http2Frame.DefaultWindowSize;
@@ -38,6 +41,8 @@ internal sealed class Http2Connection : IHttpConnection
     private int _nextStreamId;
     private int _connectionUnacknowledged;
     private volatile bool _goingAway;
+    private volatile bool _retired;
+    private long _idleSince = Stopwatch.GetTimestamp();
     private int _closed;
 
     private List<byte>? _headerBlock;
@@ -45,11 +50,12 @@ internal sealed class Http2Connection : IHttpConnection
     private bool _headerBlockEndStream;
     private int _pushPromisedStreamId;
 
-    private Http2Connection(Origin origin, ClientProfile profile, Stream stream)
+    private Http2Connection(Origin origin, ClientProfile profile, Stream stream, ILogger logger)
     {
         Origin = origin;
         Profile = profile;
         _stream = stream;
+        _logger = logger;
         _reader = new Http2FrameReader(stream);
 
         var settings = profile.Http2.Preface.OfType<Http2SettingsFrame>().FirstOrDefault()?.Settings ?? [];
@@ -63,18 +69,49 @@ internal sealed class Http2Connection : IHttpConnection
 
         // Streams named by preface PRIORITY frames (Firefox uses 3..13 as grouping nodes) are not available for requests.
         var highestPriorityStream = profile.Http2.Preface.OfType<Http2PriorityFrame>().Select(static frame => (int)frame.StreamId).DefaultIfEmpty(-1).Max();
-        _nextStreamId = highestPriorityStream < 1 ? 1 : highestPriorityStream + (highestPriorityStream % 2 == 1 ? 2 : 1);
+        var afterPriorityFrames = highestPriorityStream < 1 ? 1 : highestPriorityStream + (highestPriorityStream % 2 == 1 ? 2 : 1);
+        _nextStreamId = Math.Max(afterPriorityFrames, (int)(profile.Http2.FirstStreamId | 1));
     }
 
     public Origin Origin { get; }
 
     public ClientProfile Profile { get; }
 
-    public bool IsReusable => !_goingAway && Volatile.Read(ref _closed) == 0 && _nextStreamId < int.MaxValue - 2;
+    public bool IsReusable => !_goingAway && !_retired && Volatile.Read(ref _closed) == 0 && _nextStreamId < int.MaxValue - 2;
 
-    public static async Task<Http2Connection> OpenAsync(Origin origin, ClientProfile profile, Stream stream, CancellationToken cancellationToken)
+    public bool IsClosed => Volatile.Read(ref _closed) != 0;
+
+    /// <summary>How long the connection has had no open stream, or null while it is in use.</summary>
+    public TimeSpan? IdleTime
     {
-        var connection = new Http2Connection(origin, profile, stream);
+        get
+        {
+            lock (_slotLock)
+            {
+                return _activeStreams == 0 && _slotWaiters.Count == 0 ? Stopwatch.GetElapsedTime(_idleSince) : null;
+            }
+        }
+    }
+
+    /// <summary>Atomically stops accepting streams if the connection has been idle for at least <paramref name="minimumIdle"/>;
+    /// a request racing for it gets a replayable failure instead of a connection that is about to close.</summary>
+    public bool TryRetire(TimeSpan minimumIdle)
+    {
+        lock (_slotLock)
+        {
+            if (_activeStreams != 0 || _slotWaiters.Count != 0 || Stopwatch.GetElapsedTime(_idleSince) < minimumIdle)
+            {
+                return false;
+            }
+
+            _retired = true;
+            return true;
+        }
+    }
+
+    public static async Task<Http2Connection> OpenAsync(Origin origin, ClientProfile profile, Stream stream, ILogger logger, CancellationToken cancellationToken)
+    {
+        var connection = new Http2Connection(origin, profile, stream, logger);
         await stream.WriteAsync(Preface(profile.Http2), cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         _ = Task.Run(connection.ReadLoopAsync, CancellationToken.None);
@@ -83,7 +120,7 @@ internal sealed class Http2Connection : IHttpConnection
 
     public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, RequestKind kind, string? cookieHeader, CancellationToken cancellationToken)
     {
-        var plan = RequestHeaderBuilder.Build(request, Profile, kind, cookieHeader);
+        var plan = RequestHeaderBuilder.Build(request, Profile, kind, cookieHeader, http2: true);
         var headers = RequestHeaders(request, plan);
         HeaderValidation.Validate(headers.Where(static header => !header.Key.StartsWith(':')));
 
@@ -94,7 +131,7 @@ internal sealed class Http2Connection : IHttpConnection
         {
             await using (cancellationToken.Register(static state => Cancel((Http2Stream)state!), stream).ConfigureAwait(false))
             {
-                await WriteHeadersAsync(stream, headers, endStream, cancellationToken).ConfigureAwait(false);
+                await WriteHeadersAsync(stream, headers, endStream, Profile.Http2.PriorityFor(kind), cancellationToken).ConfigureAwait(false);
                 if (!endStream)
                 {
                     var body = new Http2RequestBodyStream(this, stream);
@@ -117,7 +154,7 @@ internal sealed class Http2Connection : IHttpConnection
 
             throw new OperationCanceledException("The request was canceled.", exception, cancellationToken);
         }
-        catch (Http2RetryableException exception) when (request.Content is null)
+        catch (Http2RetryableException exception) when (HttpContentReplay.IsReplayable(request.Content))
         {
             ReleaseIfNeverOpened(stream);
             throw new StaleConnectionException(exception);
@@ -139,34 +176,8 @@ internal sealed class Http2Connection : IHttpConnection
         }
     }
 
-    public void Dispose()
-    {
-        if (Volatile.Read(ref _closed) != 0)
-        {
-            return;
-        }
-
-        try
-        {
-            if (_writeLock.Wait(TimeSpan.FromMilliseconds(250)))
-            {
-                try
-                {
-                    _stream.Write(Http2Frame.GoAway(0, Http2ErrorCode.NoError));
-                }
-                finally
-                {
-                    _writeLock.Release();
-                }
-            }
-        }
-        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
-        {
-            // Best effort: the peer learns about the close from the TCP connection anyway.
-        }
-
-        Close(new ObjectDisposedException(nameof(Http2Connection)));
-    }
+    /// <summary>Closes the socket without GOAWAY, as OkHttp's pool does when it evicts a connection.</summary>
+    public void Dispose() => Close(new ObjectDisposedException(nameof(Http2Connection)));
 
     internal async ValueTask<int> ReadBodyAsync(Http2Stream stream, Memory<byte> buffer, CancellationToken cancellationToken)
     {
@@ -266,7 +277,8 @@ internal sealed class Http2Connection : IHttpConnection
         return response;
     }
 
-    private async Task WriteHeadersAsync(Http2Stream stream, List<KeyValuePair<string, string>> headers, bool endStream, CancellationToken cancellationToken)
+    private async Task WriteHeadersAsync(
+        Http2Stream stream, List<KeyValuePair<string, string>> headers, bool endStream, Http2HeadersPriority? priority, CancellationToken cancellationToken)
     {
         await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -289,7 +301,7 @@ internal sealed class Http2Connection : IHttpConnection
 
             try
             {
-                await _stream.WriteAsync(HeaderFrames(stream.Id, block, endStream), CancellationToken.None).ConfigureAwait(false);
+                await _stream.WriteAsync(HeaderFrames(stream.Id, block, endStream, priority), CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or ObjectDisposedException)
             {
@@ -303,10 +315,10 @@ internal sealed class Http2Connection : IHttpConnection
         }
     }
 
-    private byte[] HeaderFrames(int streamId, byte[] block, bool endStream)
+    private byte[] HeaderFrames(int streamId, byte[] block, bool endStream, Http2HeadersPriority? headersPriority)
     {
         var maxFrameSize = Volatile.Read(ref _peerMaxFrameSize);
-        byte[] priority = Profile.Http2.HeadersPriority is { } p
+        byte[] priority = headersPriority is { } p
             ? Http2Frame.PriorityFields((int)p.DependencyStreamId, p.Exclusive, p.Weight)
             : [];
 
@@ -706,6 +718,7 @@ internal sealed class Http2Connection : IHttpConnection
         var lastStreamId = BinaryPrimitives.ReadInt32BigEndian(payload) & int.MaxValue;
         var code = (Http2ErrorCode)BinaryPrimitives.ReadUInt32BigEndian(payload[4..]);
         _goingAway = true;
+        Log.GoAway(_logger, Origin.Host, code, lastStreamId);
 
         foreach (var stream in _streams.Values.Where(stream => stream.Id > lastStreamId))
         {
@@ -775,7 +788,7 @@ internal sealed class Http2Connection : IHttpConnection
         var code = (Http2ErrorCode)BinaryPrimitives.ReadUInt32BigEndian(payload);
         RemoveStream(stream);
         stream.Fail(code == Http2ErrorCode.RefusedStream
-            ? new Http2RetryableException("The server refused the stream.")
+            ? new Http2RetryableException("The server refused the stream.", refusedStream: true)
             : new HttpProtocolException((long)code, $"The server reset the stream ({code}).", null));
         SignalFlow();
     }
@@ -799,6 +812,7 @@ internal sealed class Http2Connection : IHttpConnection
             return;
         }
 
+        Log.Http2Closed(_logger, Origin.Host, reason);
         var error = new IOException("The HTTP/2 connection closed.", reason);
         foreach (var stream in _streams.Values)
         {
@@ -870,7 +884,10 @@ internal sealed class Http2Connection : IHttpConnection
                 }
             }
 
-            _activeStreams--;
+            if (--_activeStreams == 0)
+            {
+                _idleSince = Stopwatch.GetTimestamp();
+            }
         }
     }
 

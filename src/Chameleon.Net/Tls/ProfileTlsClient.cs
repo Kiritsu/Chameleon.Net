@@ -22,6 +22,16 @@ internal sealed class ProfileTlsClient : DefaultTlsClient
         _certificateValidator = certificateValidator;
     }
 
+    /// <summary>A ticket from an earlier connection to offer as a resumption PSK. BouncyCastle only knows external PSKs; the key schedule is
+    /// the same, and <see cref="ChameleonTlsClientProtocol"/> rewrites the identity's age and computes the binder with the resumption label.</summary>
+    public SessionTicket? Resumption { get; set; }
+
+    public override IList<TlsPskExternal>? GetExternalPsks() =>
+        Resumption is { } ticket ? [new BasicTlsPskExternal(ticket.Identity, Crypto.CreateSecret(ticket.Psk), ticket.PrfAlgorithm)] : null;
+
+    public override short[] GetPskKeyExchangeModes() =>
+        Find<PskKeyExchangeModesExtension>()?.Modes.Select(static mode => (short)mode).ToArray() ?? base.GetPskKeyExchangeModes();
+
     public override TlsAuthentication GetAuthentication() => new ValidatingAuthentication(_certificateValidator, _serverName);
 
     public override int[] GetCipherSuites() => _profile.CipherSuites.Select(static suite => (int)suite).ToArray();
@@ -50,8 +60,9 @@ internal sealed class ProfileTlsClient : DefaultTlsClient
     protected override int[] GetSupportedGroups(IList<int> namedGroupRoles) =>
         Find<SupportedGroupsExtension>()?.Groups.Select(static group => (int)group).ToArray() ?? [];
 
+    // Hybrid post-quantum shares are added by ChameleonTlsClientProtocol; BouncyCastle can't generate them.
     public override IList<int> GetEarlyKeyShareGroups() =>
-        Find<KeyShareExtension>()?.Groups.Select(static group => (int)group).ToList() ?? [];
+        Find<KeyShareExtension>()?.Groups.Select(static group => (int)group).Where(static group => !HybridKeyAgreement.IsHybrid(group)).ToList() ?? [];
 
     protected override IList<SignatureAndHashAlgorithm> GetSupportedSignatureAlgorithms() =>
         Find<SignatureAlgorithmsExtension>()?.Schemes
@@ -70,9 +81,12 @@ internal sealed class ProfileTlsClient : DefaultTlsClient
         {
             switch (extension)
             {
-                case ServerNameExtension:
+                // RFC 6066 forbids IP literals in SNI; BoringSSL, Conscrypt and browsers leave the extension out.
+                case ServerNameExtension when !System.Net.IPAddress.TryParse(_serverName, out _):
                     TlsExtensionsUtilities.AddServerNameExtensionClient(extensions,
                         [new ServerName(NameType.host_name, Encoding.ASCII.GetBytes(_serverName))]);
+                    break;
+                case ServerNameExtension:
                     break;
                 case StatusRequestExtension:
                     extensions[ExtensionType.status_request] = [(byte)CertificateStatusType.ocsp, 0, 0, 0, 0];
@@ -119,7 +133,7 @@ internal sealed class ProfileTlsClient : DefaultTlsClient
                     extensions[alps.Type] = EncodeAlps(alps.Protocols);
                     break;
                 case EncryptedClientHelloGreaseExtension ech:
-                    extensions[ech.Type] = EncodeGreaseEch();
+                    extensions[ech.Type] = EncodeGreaseEch(ech);
                     break;
                 case RenegotiationInfoExtension:
                     extensions[ExtensionType.renegotiation_info] = [0];
@@ -167,19 +181,21 @@ internal sealed class ProfileTlsClient : DefaultTlsClient
         return body.ToArray();
     }
 
-    // Shape of Chrome's GREASE ECH (draft-ietf-tls-esni): outer type, HKDF-SHA256/AES-128-GCM, random config id, 32-byte enc, random payload.
-    private byte[] EncodeGreaseEch()
+    // Shape of GREASE ECH (draft-ietf-tls-esni): outer type, HKDF-SHA256 and an AEAD, random config id, 32-byte enc, random payload.
+    // BoringSSL picks the payload length as 32 * {4..7} + 16 bytes of AEAD overhead, i.e. 144, 176, 208 or 240, always with AES-128-GCM.
+    private byte[] EncodeGreaseEch(EncryptedClientHelloGreaseExtension ech)
     {
         var random = Crypto.SecureRandom;
+        var aead = ech.AeadIds is { Count: > 0 } aeads ? aeads[random.Next(aeads.Count)] : (ushort)0x0001;
         var enc = new byte[32];
-        var payload = new byte[144];
+        var payload = new byte[ech.PayloadLengths is { Count: > 0 } lengths ? lengths[random.Next(lengths.Count)] : (32 * (4 + random.Next(4))) + 16];
         random.NextBytes(enc);
         random.NextBytes(payload);
 
         using var body = new MemoryStream();
         body.WriteByte(0);
         TlsUtilities.WriteUint16(0x0001, body);
-        TlsUtilities.WriteUint16(0x0001, body);
+        TlsUtilities.WriteUint16(aead, body);
         body.WriteByte((byte)random.Next(256));
         TlsUtilities.WriteOpaque16(enc, body);
         TlsUtilities.WriteOpaque16(payload, body);

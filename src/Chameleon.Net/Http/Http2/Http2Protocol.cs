@@ -134,4 +134,10 @@ internal sealed class Http2ConnectionException(Http2ErrorCode code, string messa
 }
 
 /// <summary>The server did not process the stream (GOAWAY past it, REFUSED_STREAM, or the connection failed before anything was sent).</summary>
-internal sealed class Http2RetryableException(string message, Exception? innerException = null) : IOException(message, innerException);
+internal sealed class Http2RetryableException(string message, Exception? innerException = null, bool refusedStream = false)
+    : IOException(message, innerException)
+{
+    /// <summary>REFUSED_STREAM: the server was at its stream limit, often only because its bookkeeping lags behind the streams it just
+    /// finished. Worth retrying more patiently than a dead connection.</summary>
+    public bool RefusedStream { get; } = refusedStream;
+}

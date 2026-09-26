@@ -35,4 +35,41 @@ public sealed class BouncyCastleInternalsTests
         Assert.True(field.IsFamily);
         Assert.Equal(typeof(ClientHello), field.FieldType);
     }
+
+    /// <summary>Hybrid post-quantum shares are registered here so BouncyCastle finds them when the ServerHello arrives.</summary>
+    [Fact]
+    public void ClientAgreementsAreProtectedAndMutable()
+    {
+        var field = typeof(TlsClientProtocol).GetField("m_clientAgreements", Instance);
+
+        Assert.NotNull(field);
+        Assert.True(field.IsFamily);
+        Assert.True(typeof(IDictionary<int, Org.BouncyCastle.Tls.Crypto.TlsAgreement>).IsAssignableFrom(field.FieldType));
+    }
+
+    /// <summary>CompressedCertificate support replays BouncyCastle's Certificate branch. It also relies on ProcessHandshakeQueue having
+    /// hashed the message before dispatch (checked end to end by the explicit compressed-certificate live test).</summary>
+    [Theory]
+    [InlineData("Handle13HandshakeMessage")]
+    [InlineData("Skip13CertificateRequest")]
+    [InlineData("Receive13ServerCertificate")]
+    public void CertificateHandlingSeamsAreOverridable(string name)
+    {
+        var method = typeof(TlsClientProtocol).GetMethod(name, Instance);
+
+        Assert.NotNull(method);
+        Assert.True(method.IsVirtual && method.IsFamily);
+    }
+
+    [Theory]
+    [InlineData("CS_SERVER_ENCRYPTED_EXTENSIONS", 5)]
+    [InlineData("CS_SERVER_CERTIFICATE", 7)]
+    [InlineData("CS_SERVER_CERTIFICATE_REQUEST", 11)]
+    public void ConnectionStatesKeepTheirValues(string name, short value)
+    {
+        var field = typeof(TlsProtocol).GetField(name, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+
+        Assert.NotNull(field);
+        Assert.Equal(value, field.GetRawConstantValue());
+    }
 }

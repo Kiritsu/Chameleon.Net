@@ -37,6 +37,22 @@ public sealed class ChameleonWebSocketConnectorTests
         Assert.Contains("User-Agent: okhttp/4.12.0", lines);
     }
 
+    [Fact]
+    public async Task CallerUserAgentKeepsItsPosition()
+    {
+        await using var server = new LoopbackWebSocketServer();
+        var options = new ChameleonWebSocketOptions();
+        options.Headers.Add(new("User-Agent", "grindr3/9.0"));
+        options.SubProtocols.Add("chat");
+
+        using var webSocket = await _connector.ConnectAsync(server.Uri, Profile, options, CancellationToken);
+        var lines = (await server.RequestHead).Split("\r\n");
+
+        Assert.Equal(
+            ["User-Agent", "Sec-WebSocket-Protocol", "Upgrade", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions", "Host", "Accept-Encoding"],
+            lines[1..].Select(static line => line[..line.IndexOf(':', StringComparison.Ordinal)]));
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("permessage-deflate")]

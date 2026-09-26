@@ -92,6 +92,18 @@ public sealed class OkHttp4Android13GoldenTests
         Assert.Equal(http.Ja4[10..], webSocket.Ja4[10..]);
     }
 
+    [Theory]
+    [InlineData("203.0.113.7")]
+    [InlineData("2001:db8::1")]
+    public async Task IpLiteralHostsGetNoServerName(string host)
+    {
+        var hello = ClientHelloParser.Parse(await ClientHelloCapture.CaptureAsync(Profile, host));
+
+        Assert.False(hello.HasServerName);
+        Assert.DoesNotContain((ushort)0x0000, hello.ExtensionTypes);
+        Assert.Equal('i', TlsFingerprinter.Compute(hello).Ja4[3]);
+    }
+
     private static async Task<TlsFingerprint> FingerprintAsync(string host) =>
         TlsFingerprinter.Compute(ClientHelloParser.Parse(await ClientHelloCapture.CaptureAsync(Profile, host)));
 }

@@ -1,10 +1,20 @@
 namespace Chameleon.Net.Profiles;
 
 /// <summary>Akamai-style HTTP/2 fingerprint: the ordered connection preface plus how HEADERS frames are shaped.</summary>
+/// <param name="HeadersPriorityOverrides">Per request kind, replacing <paramref name="HeadersPriority"/> (Chrome derives the weight
+/// from the request's urgency: 256 for navigations, 220 for fetch()).</param>
+/// <param name="FirstStreamId">Stream id of the first request on a connection (odd). Firefox starts at 3; everyone else at 1.
+/// Preface PRIORITY frames push it further: requests never reuse a stream they name.</param>
 public sealed record Http2Profile(
     IReadOnlyList<Http2PrefaceFrame> Preface,
     IReadOnlyList<PseudoHeader> PseudoHeaderOrder,
-    Http2HeadersPriority? HeadersPriority);
+    Http2HeadersPriority? HeadersPriority,
+    IReadOnlyDictionary<RequestKind, Http2HeadersPriority>? HeadersPriorityOverrides = null,
+    uint FirstStreamId = 1)
+{
+    public Http2HeadersPriority? PriorityFor(RequestKind kind) =>
+        HeadersPriorityOverrides is not null && HeadersPriorityOverrides.TryGetValue(kind, out var priority) ? priority : HeadersPriority;
+}
 
 public abstract record Http2PrefaceFrame;
 

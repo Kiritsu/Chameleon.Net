@@ -19,10 +19,11 @@ internal sealed class LoopbackWebSocketServer : IAsyncDisposable
     /// <param name="acceptedExtensions">Sent as <c>Sec-WebSocket-Extensions</c> in the 101, and used by the server side too.</param>
     /// <param name="sentWithUpgrade">Bytes written in the same write as the 101 response.</param>
     /// <param name="respond">Replaces the whole response (raw text); the connection closes after it.</param>
-    public LoopbackWebSocketServer(string? acceptedExtensions = null, byte[]? sentWithUpgrade = null, Func<string, string>? respond = null)
+    /// <param name="upgradeHeaders">Extra header lines for the 101, e.g. <c>Set-Cookie: a=1</c>.</param>
+    public LoopbackWebSocketServer(string? acceptedExtensions = null, byte[]? sentWithUpgrade = null, Func<string, string>? respond = null, string[]? upgradeHeaders = null)
     {
         _listener.Start();
-        _serving = ServeAsync(acceptedExtensions, sentWithUpgrade ?? [], respond);
+        _serving = ServeAsync(acceptedExtensions, sentWithUpgrade ?? [], respond, upgradeHeaders ?? []);
     }
 
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
@@ -44,7 +45,7 @@ internal sealed class LoopbackWebSocketServer : IAsyncDisposable
         }
     }
 
-    private async Task ServeAsync(string? acceptedExtensions, byte[] sentWithUpgrade, Func<string, string>? respond)
+    private async Task ServeAsync(string? acceptedExtensions, byte[] sentWithUpgrade, Func<string, string>? respond, string[] upgradeHeaders)
     {
         using var client = await _listener.AcceptTcpClientAsync();
         var stream = client.GetStream();
@@ -64,6 +65,7 @@ internal sealed class LoopbackWebSocketServer : IAsyncDisposable
         var response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
             + $"Sec-WebSocket-Accept: {accept}\r\n"
             + (acceptedExtensions is null ? string.Empty : $"Sec-WebSocket-Extensions: {acceptedExtensions}\r\n")
+            + string.Concat(upgradeHeaders.Select(static line => line + "\r\n"))
             + "\r\n";
         await stream.WriteAsync((byte[])[.. Encoding.Latin1.GetBytes(response), .. sentWithUpgrade]);
 

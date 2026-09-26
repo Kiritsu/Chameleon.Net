@@ -31,7 +31,8 @@ public static partial class BuiltInProfiles
         Http2: new Http2Profile(
             Preface:
             [
-                new Http2SettingsFrame([new Http2Setting(5, 16384), new Http2Setting(4, 16777216)]),
+                // Http2Connection.okHttpSettings sets INITIAL_WINDOW_SIZE only; start() then tops the connection window up to the same 16 MiB.
+                new Http2SettingsFrame([new Http2Setting(4, 16777216)]),
                 new Http2WindowUpdateFrame(16711681),
             ],
             PseudoHeaderOrder: [PseudoHeader.Method, PseudoHeader.Path, PseudoHeader.Authority, PseudoHeader.Scheme],
@@ -45,9 +46,10 @@ public static partial class BuiltInProfiles
                 ["Connection"] = "Keep-Alive",
                 ["Accept-Encoding"] = "gzip",
                 ["User-Agent"] = "okhttp/4.12.0",
-            }),
+            },
+            OrderMode: HeaderOrderMode.CallerFirst),
         WebSocket: new WebSocketProfile(
-            HandshakeHeaderOrder: ["Upgrade", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions", "Host", "Accept-Encoding", "User-Agent"],
+            HandshakeHeaderOrder: ["Upgrade", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions", "Host", "Accept-Encoding", "Cookie", "User-Agent"],
             PerMessageDeflateOffer: "permessage-deflate",
             Alpn: ["http/1.1"]));
 }

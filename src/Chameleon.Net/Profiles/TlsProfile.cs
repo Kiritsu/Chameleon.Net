@@ -23,4 +23,7 @@ public enum GreasePlacement
     SupportedGroups = 2,
     KeyShare = 4,
     SupportedVersions = 8,
+
+    /// <summary>Chrome 13x+ also leads signature_algorithms with a GREASE value.</summary>
+    SignatureAlgorithms = 16,
 }

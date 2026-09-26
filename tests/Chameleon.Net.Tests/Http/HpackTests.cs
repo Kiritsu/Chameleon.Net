@@ -116,6 +116,26 @@ public sealed class HpackTests
         }
     }
 
+    [Fact]
+    public void LargerPeerTableIsUsedUpToOkHttpsLimitAndAnnounced()
+    {
+        var encoder = new HpackEncoder();
+        encoder.SetMaxTableSize(65536);
+
+        Assert.StartsWith("3fe17f", Convert.ToHexStringLower(encoder.Encode([new(":method", "GET")])), StringComparison.Ordinal);
+        Assert.Equal("82", Convert.ToHexStringLower(encoder.Encode([new(":method", "GET")])));
+    }
+
+    [Fact]
+    public void ShrinkThenGrowAnnouncesBothSizes()
+    {
+        var encoder = new HpackEncoder();
+        encoder.SetMaxTableSize(0);
+        encoder.SetMaxTableSize(4096 + 1);
+
+        Assert.Equal("203fe21f82", Convert.ToHexStringLower(encoder.Encode([new(":method", "GET")])));
+    }
+
     [Theory]
     [InlineData("80")] // index 0
     [InlineData("be")] // dynamic index on an empty table

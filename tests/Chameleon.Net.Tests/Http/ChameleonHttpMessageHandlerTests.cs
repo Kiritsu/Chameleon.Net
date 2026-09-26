@@ -35,6 +35,37 @@ public sealed class ChameleonHttpMessageHandlerTests
     }
 
     [Fact]
+    public async Task CallerSetHeadersKeepTheirPositionUnderOkHttp()
+    {
+        await using var server = new LoopbackHttpServer(static _ => Reply.Ok("hi"));
+        using var client = Client();
+        using var request = new HttpRequestMessage(HttpMethod.Get, server.Url("/"));
+        request.Headers.TryAddWithoutValidation("user-agent", "grindr3/9.0");
+        request.Headers.Add("X-App", "1");
+
+        (await client.SendAsync(request, CancellationToken)).Dispose();
+
+        var sent = Assert.Single(server.Requests);
+        Assert.Equal(["User-Agent", "X-App", "Host", "Connection", "Accept-Encoding"], sent.HeaderNames);
+        Assert.Equal("grindr3/9.0", sent.Header("User-Agent"));
+    }
+
+    [Fact]
+    public async Task ProfileOrderMovesCallerSetHeadersIntoPlace()
+    {
+        var browserLike = Profile with { Headers = Profile.Headers with { OrderMode = HeaderOrderMode.ProfileOrder } };
+        await using var server = new LoopbackHttpServer(static _ => Reply.Ok("hi"));
+        using var client = new HttpClient(new ChameleonHttpMessageHandler(browserLike));
+        using var request = new HttpRequestMessage(HttpMethod.Get, server.Url("/"));
+        request.Headers.TryAddWithoutValidation("User-Agent", "custom");
+        request.Headers.Add("X-App", "1");
+
+        (await client.SendAsync(request, CancellationToken)).Dispose();
+
+        Assert.Equal(["X-App", "Host", "Connection", "Accept-Encoding", "User-Agent"], Assert.Single(server.Requests).HeaderNames);
+    }
+
+    [Fact]
     public async Task PostWithKnownLengthSendsContentLength()
     {
         await using var server = new LoopbackHttpServer(static _ => Reply.Ok("ok"));
@@ -278,12 +309,6 @@ public sealed class ChameleonHttpMessageHandlerTests
         timeout.CancelAfter(TimeSpan.FromMilliseconds(200));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetAsync(server.Url("/"), timeout.Token));
-    }
-
-    [Fact]
-    public void UnsupportedOptionsAreRejected()
-    {
-        Assert.Throws<NotSupportedException>(() => new ChameleonHttpMessageHandler(Profile, new ChameleonOptions { Proxy = new WebProxy("http://proxy") }));
     }
 
     private static HttpClient Client(ChameleonOptions? options = null) => new(new ChameleonHttpMessageHandler(Profile, options));

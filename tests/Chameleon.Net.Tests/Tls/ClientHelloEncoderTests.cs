@@ -95,6 +95,19 @@ public sealed class ClientHelloEncoderTests
         }
     }
 
+    /// <summary>BoringSSL draws one GREASE group for both lists; every Chromium capture shows the same value in each.</summary>
+    [Fact]
+    public async Task KeyShareGreaseIsTheSupportedGroupsGrease()
+    {
+        for (var i = 0; i < Connections; i++)
+        {
+            var record = await ClientHelloCapture.CaptureAsync(ChromeShaped, "example.com");
+            var keyShare = RawExtensions(record).Single(static e => e.Type == 51).Body;
+
+            Assert.Equal(ClientHelloParser.Parse(record).SupportedGroups[0], BinaryPrimitives.ReadUInt16BigEndian(keyShare.AsSpan(2)));
+        }
+    }
+
     private static async Task<ParsedClientHello> CaptureAsync() =>
         ClientHelloParser.Parse(await ClientHelloCapture.CaptureAsync(ChromeShaped, "example.com"));
 

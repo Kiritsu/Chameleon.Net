@@ -9,27 +9,45 @@ internal sealed class HpackEncoder
 {
     private const int DefaultTableSize = 4096;
 
-    private readonly HpackDynamicTable _table = new(DefaultTableSize);
-    private int? _pendingSizeUpdate;
+    /// <summary>OkHttp's SETTINGS_HEADER_TABLE_SIZE_LIMIT: larger peer settings are honoured only up to this size.</summary>
+    private const int TableSizeLimit = 16384;
 
-    /// <summary>Applies the peer's SETTINGS_HEADER_TABLE_SIZE; announced at the start of the next block.</summary>
+    private readonly HpackDynamicTable _table = new(DefaultTableSize);
+    private bool _emitSizeUpdate;
+    private int _smallestSizeSinceLastBlock = int.MaxValue;
+
+    /// <summary>Applies the peer's SETTINGS_HEADER_TABLE_SIZE like OkHttp's <c>resizeHeaderTable</c>: announced at the start of the next block,
+    /// preceded by the smallest intermediate size when the table shrank in between.</summary>
     public void SetMaxTableSize(int peerMaxTableSize)
     {
-        var size = Math.Min(peerMaxTableSize, DefaultTableSize);
-        if (size != _table.MaxSize)
+        var size = Math.Min(peerMaxTableSize, TableSizeLimit);
+        if (size == _table.MaxSize)
         {
-            _table.Resize(size);
-            _pendingSizeUpdate = size;
+            return;
         }
+
+        if (size < _table.MaxSize)
+        {
+            _smallestSizeSinceLastBlock = Math.Min(_smallestSizeSinceLastBlock, size);
+        }
+
+        _emitSizeUpdate = true;
+        _table.Resize(size);
     }
 
     public byte[] Encode(IEnumerable<KeyValuePair<string, string>> headers)
     {
         var block = new List<byte>();
-        if (_pendingSizeUpdate is { } size)
+        if (_emitSizeUpdate)
         {
-            HpackInteger.Write(block, size, 5, 0x20);
-            _pendingSizeUpdate = null;
+            if (_smallestSizeSinceLastBlock < _table.MaxSize)
+            {
+                HpackInteger.Write(block, _smallestSizeSinceLastBlock, 5, 0x20);
+            }
+
+            HpackInteger.Write(block, _table.MaxSize, 5, 0x20);
+            _emitSizeUpdate = false;
+            _smallestSizeSinceLastBlock = int.MaxValue;
         }
 
         foreach (var (name, value) in headers)

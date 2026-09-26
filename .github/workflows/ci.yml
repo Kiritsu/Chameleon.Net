@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      live:
+        description: Also run the live tests (real network: tls.peet.ws, Cloudflare, Google, ...)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Chameleon.Net.slnx
+
+      - name: Build
+        run: dotnet build Chameleon.Net.slnx -c Release --no-restore
+
+      # Offline only: live tests are marked Explicit and skipped by default.
+      - name: Test
+        run: dotnet test --solution Chameleon.Net.slnx -c Release --no-build
+
+      - name: Pack
+        if: matrix.os == 'ubuntu-latest'
+        run: dotnet pack src/Chameleon.Net/Chameleon.Net.csproj -c Release --no-build -o artifacts
+
+      - uses: actions/upload-artifact@v7
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: packages
+          path: artifacts/*
+          if-no-files-found: error
+
+  live:
+    name: Live tests
+    if: github.event_name == 'workflow_dispatch' && inputs.live
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Live tests
+        run: dotnet test --solution Chameleon.Net.slnx -c Release -- --explicit only

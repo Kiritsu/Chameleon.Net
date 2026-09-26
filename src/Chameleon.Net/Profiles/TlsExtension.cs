@@ -36,10 +36,15 @@ public sealed record PskKeyExchangeModesExtension(IReadOnlyList<byte> Modes) : T
 /// <summary>Groups for which a key_share entry is generated; a subset of <see cref="SupportedGroupsExtension.Groups"/>.</summary>
 public sealed record KeyShareExtension(IReadOnlyList<ushort> Groups) : TlsExtension(51);
 
-public sealed record ApplicationSettingsExtension(IReadOnlyList<string> Protocols) : TlsExtension(17513);
+/// <summary>ALPS. Chrome moved from the original codepoint 17513 to 17613 (Chrome 131+).</summary>
+public sealed record ApplicationSettingsExtension(IReadOnlyList<string> Protocols, ushort Codepoint = 17513) : TlsExtension(Codepoint);
 
-/// <summary>GREASE ECH as sent by Chrome; real ECH is out of scope.</summary>
-public sealed record EncryptedClientHelloGreaseExtension() : TlsExtension(65037);
+/// <summary>GREASE ECH (an outer ECH extension with random contents); real ECH is out of scope.</summary>
+/// <param name="AeadIds">HPKE AEADs to pick from per connection. Null: AES-128-GCM only (BoringSSL). Firefox (NSS) picks AES-128-GCM or ChaCha20-Poly1305.</param>
+/// <param name="PayloadLengths">Payload lengths to pick from per connection, AEAD tag included. Null: 144, 176, 208 or 240 (BoringSSL).
+/// Firefox always sends 240.</param>
+public sealed record EncryptedClientHelloGreaseExtension(IReadOnlyList<ushort>? AeadIds = null, IReadOnlyList<int>? PayloadLengths = null)
+    : TlsExtension(65037);
 
 public sealed record RenegotiationInfoExtension() : TlsExtension(65281);
 
