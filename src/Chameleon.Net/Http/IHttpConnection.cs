@@ -7,5 +7,5 @@ public interface IHttpConnection : IAsyncDisposable
 {
     bool IsReusable { get; }
 
-    ValueTask<HttpResponseMessage> SendAsync(HttpRequestMessage request, RequestKind kind, CancellationToken cancellationToken);
+    Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, RequestKind kind, CancellationToken cancellationToken = default);
 }

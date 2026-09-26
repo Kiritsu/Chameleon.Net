@@ -43,7 +43,7 @@ public sealed record EncryptedClientHelloGreaseExtension() : TlsExtension(65037)
 
 public sealed record RenegotiationInfoExtension() : TlsExtension(65281);
 
-/// <summary>Placeholder; the concrete GREASE value is drawn at build time.</summary>
-public sealed record GreaseExtension() : TlsExtension(0x0A0A);
+/// <summary>Placeholder; the concrete GREASE value is drawn at build time. <paramref name="Body"/> is sent as-is: BoringSSL sends its first GREASE extension empty and its second with one zero byte.</summary>
+public sealed record GreaseExtension(ReadOnlyMemory<byte> Body = default) : TlsExtension(0x0A0A);
 
 public sealed record RawExtension(ushort Type, ReadOnlyMemory<byte> Body) : TlsExtension(Type);

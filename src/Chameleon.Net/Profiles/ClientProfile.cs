@@ -10,7 +10,7 @@ public sealed record ClientProfile(
     TransportProfile? Transport = null);
 
 /// <summary>Structured metadata so selectors can filter by platform or client family ("any Android", "Chrome ≥ 130") instead of parsing names.</summary>
-public sealed record ProfileIdentity(
+public readonly record struct ProfileIdentity(
     string Name,
     ClientPlatform Platform,
     string ClientFamily,

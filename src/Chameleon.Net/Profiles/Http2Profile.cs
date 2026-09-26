@@ -10,13 +10,13 @@ public abstract record Http2PrefaceFrame;
 
 public sealed record Http2SettingsFrame(IReadOnlyList<Http2Setting> Settings) : Http2PrefaceFrame;
 
-public sealed record Http2Setting(ushort Id, uint Value);
+public readonly record struct Http2Setting(ushort Id, uint Value);
 
 public sealed record Http2WindowUpdateFrame(uint Increment) : Http2PrefaceFrame;
 
 public sealed record Http2PriorityFrame(uint StreamId, uint DependencyStreamId, byte Weight, bool Exclusive) : Http2PrefaceFrame;
 
-public sealed record Http2HeadersPriority(uint DependencyStreamId, byte Weight, bool Exclusive);
+public readonly record struct Http2HeadersPriority(uint DependencyStreamId, byte Weight, bool Exclusive);
 
 public enum PseudoHeader
 {
