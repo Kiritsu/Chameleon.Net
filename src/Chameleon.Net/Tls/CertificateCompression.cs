@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
 using Org.BouncyCastle.Tls;
+using ZstdSharp;
 
 namespace Chameleon.Net.Tls;
 
@@ -41,7 +42,8 @@ internal static class CertificateCompression
         {
             Brotli => BrotliDecoder.TryDecompress(compressed, certificate, out var written) && written == uncompressedLength,
             Zlib => TryInflate(compressed, certificate),
-            _ => false, // zstd: no decoder in the BCL.
+            Zstd => TryUnwrapZstd(compressed, certificate),
+            _ => false,
         };
 
         return ok ? certificate : throw BadCertificate();
@@ -56,6 +58,20 @@ internal static class CertificateCompression
             return zlib.ReadByte() == -1;
         }
         catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryUnwrapZstd(ReadOnlySpan<byte> compressed, byte[] certificate)
+    {
+        try
+        {
+            // The destination is exactly uncompressed_length: a frame that expands further fails instead of growing (no zip bomb).
+            using var decompressor = new Decompressor();
+            return decompressor.Unwrap(compressed, certificate) == certificate.Length;
+        }
+        catch (ZstdException)
         {
             return false;
         }

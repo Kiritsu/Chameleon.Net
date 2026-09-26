@@ -72,7 +72,25 @@ public sealed class LiveHttpTests
             headers.GetProperty("headers").EnumerateArray().Select(static h => h.GetString()));
     }
 
-    /// <summary>NSS offers delegated credentials and zstd certificate compression, which we can't process: check big servers don't use them on us.</summary>
+    /// <summary>Meta's sites answer the browser profiles' Accept-Encoding with zstd (Cloudflare's pick brotli); the body must come back decoded.</summary>
+    [Fact(Explicit = true)]
+    public async Task ZstdBodiesAreDecoded()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var client = new HttpClient(new ChameleonHttpMessageHandler(BuiltInProfiles.Chromium152Windows));
+        var url = new Uri("https://www.facebook.com/");
+
+        // Asking for zstd explicitly keeps the body encoded (the caller owns decoding), which shows what the server picks.
+        using var raw = new HttpRequestMessage(HttpMethod.Get, url);
+        raw.Headers.TryAddWithoutValidation("Accept-Encoding", "zstd");
+        using var encoded = await client.SendAsync(raw, cancellationToken);
+        Assert.Equal(["zstd"], encoded.Content.Headers.ContentEncoding);
+
+        var html = await client.GetStringAsync(url, cancellationToken);
+        Assert.Contains("<html", html, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>NSS offers delegated credentials, which we can't process, and zstd certificate compression: check big servers work with it.</summary>
     [Theory(Explicit = true)]
     [InlineData("https://www.cloudflare.com/cdn-cgi/trace")]
     [InlineData("https://www.google.com/")]

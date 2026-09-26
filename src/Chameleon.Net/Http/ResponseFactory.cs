@@ -1,12 +1,13 @@
 using System.IO.Compression;
 using System.Net;
+using ZstdSharp;
 
 namespace Chameleon.Net.Http;
 
 internal static class ResponseFactory
 {
     /// <param name="body">Null when the response has no body (HEAD, 204, 304, ...).</param>
-    /// <param name="transparentDecompression">Decode gzip/deflate/br and drop Content-Encoding/Content-Length, as the client itself asked for them.</param>
+    /// <param name="transparentDecompression">Decode gzip/deflate/br/zstd and drop Content-Encoding/Content-Length, as the client itself asked for them.</param>
     public static HttpResponseMessage Create(
         HttpRequestMessage request,
         int statusCode,
@@ -56,6 +57,7 @@ internal static class ResponseFactory
             "gzip" or "x-gzip" => static body => new GZipStream(body, CompressionMode.Decompress),
             "deflate" => static body => new ZLibStream(body, CompressionMode.Decompress),
             "br" => static body => new BrotliStream(body, CompressionMode.Decompress),
+            "zstd" => static body => new DecompressionStream(body, leaveOpen: false),
             _ => null,
         };
     }

@@ -21,6 +21,11 @@ internal sealed class ConnectionPool : IDisposable
 
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromSeconds(10);
 
+    /// <summary>OkHttp's IDLE_CONNECTION_HEALTHY_NS: past this idle time a connection gets an extensive health check before carrying a
+    /// request body it couldn't replay. Without a way to probe a TLS socket here, such requests skip those connections instead.
+    /// Settable for tests.</summary>
+    internal TimeSpan HealthyIdle { get; set; } = TimeSpan.FromSeconds(10);
+
     private readonly Lock _idleLock = new();
     private readonly List<Http1Connection> _idleHttp1 = [];
     private readonly List<Http2Connection> _retiredHttp2 = [];
@@ -40,11 +45,23 @@ internal sealed class ConnectionPool : IDisposable
         _routing = routing;
         _connectTimeout = connectTimeout;
         _logger = logger;
-        _cleanup = new Timer(static state => ((ConnectionPool)state!).Cleanup(), this, CleanupInterval, CleanupInterval);
+        // Weakly: an undisposed handler and its pool must stay collectable (the Timer then closes itself when it is collected).
+        _cleanup = new Timer(
+            static state =>
+            {
+                if (((WeakReference<ConnectionPool>)state!).TryGetTarget(out var pool))
+                {
+                    pool.Cleanup();
+                }
+            },
+            new WeakReference<ConnectionPool>(this),
+            CleanupInterval,
+            CleanupInterval);
     }
 
     /// <param name="http2PriorKnowledge">Cleartext only: speak HTTP/2 without negotiation (h2c).</param>
-    public async Task<IHttpConnection> RentAsync(Origin origin, bool http2PriorKnowledge, CancellationToken cancellationToken)
+    /// <param name="replayable">False when the request body can't be sent again: a stale connection can't be retried away then.</param>
+    public async Task<IHttpConnection> RentAsync(Origin origin, bool http2PriorKnowledge, bool replayable, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var secure = HttpUris.IsSecure(origin.Scheme);
@@ -64,7 +81,7 @@ internal sealed class ConnectionPool : IDisposable
             }
         }
 
-        if (!http2PriorKnowledge && TakeIdle(origin) is { } idle)
+        if (!http2PriorKnowledge && TakeIdle(origin, replayable ? null : HealthyIdle) is { } idle)
         {
             return idle;
         }
@@ -74,12 +91,13 @@ internal sealed class ConnectionPool : IDisposable
 
     public void Dispose()
     {
-        _disposed = true;
         _cleanup.Dispose();
 
         List<IDisposable> connections;
         lock (_idleLock)
         {
+            // Under the lock, so a Release racing with Dispose either lands before the snapshot or sees the flag.
+            _disposed = true;
             connections = [.. _idleHttp1, .. _retiredHttp2, .. _http2.Values];
             _idleHttp1.Clear();
             _retiredHttp2.Clear();
@@ -93,7 +111,8 @@ internal sealed class ConnectionPool : IDisposable
     }
 
     /// <summary>Most recently used first, like OkHttp.</summary>
-    private Http1Connection? TakeIdle(Origin origin)
+    /// <param name="maxIdle">Skip (but keep) connections idle for this long or more.</param>
+    private Http1Connection? TakeIdle(Origin origin, TimeSpan? maxIdle)
     {
         List<Http1Connection> broken = [];
         Http1Connection? found = null;
@@ -102,7 +121,7 @@ internal sealed class ConnectionPool : IDisposable
             for (var i = _idleHttp1.Count - 1; i >= 0 && found is null; i--)
             {
                 var candidate = _idleHttp1[i];
-                if (candidate.Origin != origin)
+                if (candidate.Origin != origin || candidate.IdleTime >= maxIdle)
                 {
                     continue;
                 }
@@ -126,19 +145,31 @@ internal sealed class ConnectionPool : IDisposable
 
     private void Release(Http1Connection connection)
     {
-        if (_disposed)
+        connection.MarkIdle();
+        bool pooled;
+        var overLimit = false;
+        lock (_idleLock)
+        {
+            // Checked under the lock Dispose takes, so a connection released mid-Dispose is never pooled after the final snapshot.
+            pooled = !_disposed;
+            if (pooled)
+            {
+                _idleHttp1.Add(connection);
+                overLimit = _idleHttp1.Count + _http2.Count > MaxIdleConnections;
+            }
+        }
+
+        if (!pooled)
         {
             connection.Dispose();
             return;
         }
 
-        connection.MarkIdle();
-        lock (_idleLock)
+        // Expiry is the timer's job; only the idle limit needs enforcing right away.
+        if (overLimit)
         {
-            _idleHttp1.Add(connection);
+            Cleanup();
         }
-
-        Cleanup();
     }
 
     /// <summary>OkHttp's <c>RealConnectionPool.cleanup</c>: close connections idle for the keep-alive duration, then the longest-idle ones
@@ -269,10 +300,29 @@ internal sealed class ConnectionPool : IDisposable
     /// <summary>Two requests may race to connect; the first HTTP/2 connection wins and the other is closed.</summary>
     private Http2Connection Share(Origin origin, Http2Connection connection)
     {
-        var shared = _http2.AddOrUpdate(origin, connection, (_, existing) => existing.IsReusable ? existing : connection);
+        Http2Connection? replaced = null;
+        var shared = _http2.AddOrUpdate(origin, connection, (_, existing) =>
+        {
+            if (existing.IsReusable)
+            {
+                return existing;
+            }
+
+            replaced = existing;
+            return connection;
+        });
+
         if (shared != connection)
         {
             connection.Dispose();
+        }
+        else if (replaced is not null)
+        {
+            // The one it displaced is going away: keep tracking it so cleanup (or Dispose) closes it.
+            lock (_idleLock)
+            {
+                _retiredHttp2.Add(replaced);
+            }
         }
 
         return shared;

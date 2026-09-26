@@ -9,9 +9,8 @@ public static partial class BuiltInProfiles
     /// <para>Unlike Chrome, NSS neither shuffles extensions nor sends GREASE, so JA3 is stable too: JA3 <c>9d42e90b0225e779f03141ddcd699df2</c>,
     /// JA4 <c>t13d1517h2_8daaf6152771_3cbfd9057e0d</c>. Akamai <c>1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s</c>; the first request
     /// uses stream 3, with HEADERS priority weight 42 (navigation) or 22 (fetch), never exclusive.</para>
-    /// <para>Differences from the real client: compress_certificate offers zstd like Firefox does, but a server that picks it fails the
-    /// handshake (no zstd decoder yet); a server-sent delegated credential isn't supported; response bodies a server sends
-    /// zstd-encoded are returned undecoded. The HPACK encoder follows OkHttp's indexing, not Firefox's.</para></summary>
+    /// <para>Differences from the real client: a server-sent delegated credential isn't supported. The HPACK encoder follows OkHttp's
+    /// indexing, not Firefox's.</para></summary>
     public static ClientProfile Firefox156Windows { get; } = new(
         Identity: new ProfileIdentity("firefox_156_windows", ClientPlatform.Windows, "Firefox", "156"),
         Tls: new TlsProfile(

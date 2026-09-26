@@ -43,6 +43,12 @@ public sealed class HelloRetryTests
         await connection.Stream.DisposeAsync();
 
         var hellos = transport.ClientHellos();
+        if (hellos.Count == 1)
+        {
+            // The retry depends on the server lacking ML-KEM (SChannel, OpenSSL < 3.5); a newer TLS stack takes the hybrid share directly.
+            Assert.Skip("The local TLS server accepted X25519MLKEM768, so there was no HelloRetryRequest to test.");
+        }
+
         Assert.Equal(2, hellos.Count);
         var (first, second) = (ClientHelloParser.Parse(hellos[0]), ClientHelloParser.Parse(hellos[1]));
         Assert.Equal(first.CipherSuites, second.CipherSuites);

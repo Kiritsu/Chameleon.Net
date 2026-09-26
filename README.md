@@ -5,9 +5,54 @@ on the wire: the TLS ClientHello, the HTTP/2 connection preface and frames, and 
 the HTTP headers. Each client is described by a **profile**; the built-in ones were captured from the real clients and
 are checked against them by tests.
 
-TLS is done by [BouncyCastle](https://www.bouncycastle.org/) instead of SChannel/OpenSSL, because the OS stacks don't
-let you choose the ClientHello. HTTP/1.1, HTTP/2 (with HPACK) and the WebSocket handshake are implemented here for
-the same reason; the WebSocket framing itself is .NET's own `WebSocket`.
+## Why this exists
+
+Servers and the CDNs in front of them (Cloudflare, Akamai, ...) don't only look at the `User-Agent`. They also
+fingerprint *how* a client talks:
+
+- **TLS**: the ClientHello lists cipher suites, extensions, groups and signature algorithms in an order that is
+  specific to each TLS library and version. [JA3](https://github.com/salesforce/ja3) and
+  [JA4](https://github.com/FoxIO-LLC/ja4) turn it into a short hash.
+- **HTTP/2**: the SETTINGS, WINDOW_UPDATE and PRIORITY frames a client opens with, and the order of its pseudo-headers,
+  differ between Chrome, Firefox, OkHttp, curl... (the "Akamai fingerprint").
+- **HTTP headers**: which headers are sent, in which order, with which casing and default values.
+
+A .NET `HttpClient` has its own fingerprint on each of these: SChannel on Windows, OpenSSL on Linux, and .NET's HTTP
+stack. It matches none of the clients an app usually claims to be. If a service expects its Android app (OkHttp)
+or a browser, a .NET client saying so in its `User-Agent` stands out at the first packet, and bot protection
+blocks it or serves it a challenge. This happens even when the traffic is legitimate: testing your own backend through
+its real edge, a desktop or server companion to a mobile app, research on fingerprinting itself.
+
+.NET gives no way to change any of this: `SslStream` doesn't let you choose the ClientHello, and `SocketsHttpHandler`
+decides its HTTP/2 frames and header order itself. Chameleon.Net replaces those layers so that a connection
+reproduces a real client's fingerprint on every one of them.
+
+## How it works
+
+A request goes through four layers. Each one is driven by the profile:
+
+1. **Transport**: a TCP connection, possibly through an HTTP (CONNECT) or SOCKS5 proxy. The proxy doesn't change what
+   the target sees.
+2. **TLS**, by [BouncyCastle](https://www.bouncycastle.org/) rather than the OS:
+   - The profile supplies the content (cipher suites, groups, signature algorithms, ALPN...). BouncyCastle runs the
+     handshake and owns the key schedule.
+   - The ClientHello bytes are written by Chameleon.Net itself: extensions in the profile's order, GREASE values,
+     Chrome's per-connection extension shuffle, and padding. The handshake transcript is fed those exact bytes, so
+     what goes on the wire is what gets authenticated.
+   - Chameleon.Net also fills in what browsers need and BouncyCastle lacks: X25519MLKEM768 post-quantum key shares,
+     compressed certificates (brotli/zlib/zstd), ALPS, GREASE ECH, and TLS 1.3 session resumption with tickets
+     reused like BoringSSL does.
+3. **HTTP**: HTTP/1.1 and HTTP/2 (with HPACK) are implemented here, not taken from .NET, so the profile controls the
+   HTTP/2 preface, stream priorities, pseudo-header order, first stream id, header order, casing and defaults per
+   request kind. Connection pooling, redirects, cookies and decompression follow the emulated client (OkHttp's
+   pool semantics for the OkHttp profile).
+4. **WebSocket**: the upgrade request is written in the profile's header order over the same TLS layer (ALPN
+   `http/1.1`). The connection is then handed to .NET's own `WebSocket` for framing.
+
+A **profile** (`ClientProfile`) is plain data: a `TlsProfile`, an `Http2Profile`, a `HeaderProfile` and a
+`WebSocketProfile`. The built-in ones were captured from the real clients. Their tests replay those captures offline
+(JA3/JA4, HTTP/2 frames, header lists), and explicit live tests check that an echo service such as tls.peet.ws sees
+the same fingerprints from Chameleon.Net as from the real client.
 
 ## Built-in profiles
 
@@ -39,7 +84,7 @@ var body = await client.GetStringAsync("https://example.com/");
 
 Headers you set on the request are kept; what the profile's client would add on its own (`User-Agent`,
 `Accept-Encoding`, ...) is added when missing, in the client's order. Responses are decompressed like the client
-would (gzip, deflate, br).
+would (gzip, deflate, br, zstd).
 
 Browser profiles distinguish request kinds, because browsers send different headers and HTTP/2 priorities for each:
 
@@ -103,8 +148,6 @@ scripted headless browser), turning the capture into a profile, and verifying it
 ## Limitations
 
 - HTTP/3 and QUIC are not implemented; neither is real ECH (GREASE ECH is).
-- zstd: response bodies sent with `Content-Encoding: zstd` are returned undecoded, and zstd certificate compression
-  (offered by the Firefox profile) isn't supported; there is no zstd decoder in .NET 10.
 - Delegated credentials (offered by the Firefox profile) are not supported if a server uses them.
 - WebSockets always go over HTTP/1.1 (no RFC 8441).
 - TCP/IP-level fingerprints (TTL, window size, options) come from the OS.

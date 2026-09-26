@@ -231,6 +231,11 @@ public sealed class ChameleonWebSocketConnector : IWebSocketConnector
             var tls = profile.WebSocket.Alpn is { } alpn ? profile.Tls.WithAlpn(alpn) : profile.Tls;
             connection = await _tlsConnectionFactory.ConnectAsync(transport, host, port, tls, timeout.Token).ConfigureAwait(false);
         }
+        catch (Exception exception) when (cancellationToken.IsCancellationRequested && exception is not OperationCanceledException)
+        {
+            // Cancelling aborts the connect by disposing the stream, which surfaces as an I/O error.
+            throw new OperationCanceledException("Connecting the WebSocket was canceled.", exception, cancellationToken);
+        }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested && exception is not ArgumentException)
         {
             var reason = timeout.IsCancellationRequested ? new TimeoutException($"Connecting took longer than {_connectTimeout}.", exception) : exception;

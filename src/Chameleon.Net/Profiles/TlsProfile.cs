@@ -6,7 +6,12 @@ public sealed record TlsProfile(
     IReadOnlyList<ushort> CipherSuites,
     IReadOnlyList<TlsExtension> Extensions,
     ExtensionShufflePolicy Shuffle,
-    GreasePlacement Grease);
+    GreasePlacement Grease)
+{
+    /// <summary>The profile whose TLS sessions this one shares: set by <see cref="TlsProfileExtensions.WithAlpn"/>, so a WebSocket's
+    /// http/1.1-only variant resumes the sessions of the profile it was derived from.</summary>
+    internal TlsProfile? SessionScope { get; init; }
+}
 
 public enum ExtensionShufflePolicy
 {

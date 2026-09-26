@@ -10,8 +10,7 @@ public static partial class BuiltInProfiles
     /// <see cref="Edge153Windows"/>).</para>
     /// <para>Expected JA4 <c>t13d1516h2_8daaf6152771_806a8c22fdea</c> (JA3 changes per connection: extension shuffle);
     /// Akamai <c>1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p</c>.</para>
-    /// <para>Resumed connections carry pre_shared_key and show <c>t13d1517h2_8daaf6152771_a87ad97598a9</c>, as the browser's do.</para>
-    /// <para>Differences from the real client: bodies a server sends zstd-encoded are returned undecoded, with Content-Encoding kept.</para></summary>
+    /// <para>Resumed connections carry pre_shared_key and show <c>t13d1517h2_8daaf6152771_a87ad97598a9</c>, as the browser's do.</para></summary>
     public static ClientProfile Chromium152Windows { get; } = new(
         Identity: new ProfileIdentity("chromium_152_windows", ClientPlatform.Windows, "Chromium", "152"),
         Tls: ChromiumFamilyTls(),

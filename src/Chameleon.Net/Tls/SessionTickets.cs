@@ -23,26 +23,28 @@ internal sealed record SessionTicket(byte[] Identity, byte[] Psk, int PrfAlgorit
 /// through <see cref="ChameleonOptions.TlsSessionCache"/> to a <see cref="Http.ChameleonHttpMessageHandler"/> and a
 /// <see cref="WebSockets.ChameleonWebSocketConnector"/> to behave like a single OkHttpClient (one Conscrypt session cache) serving
 /// both REST calls and WebSockets.</summary>
-/// <remarks>Each ticket is used once, as BoringSSL (Chrome, Conscrypt) does. Tickets are also kept apart per ClientHello shape
-/// (cipher suites and extension order; ALPN contents don't count), so a ticket never links connections made under different profiles.</remarks>
+/// <remarks>Each ticket is used once, as BoringSSL (Chrome, Conscrypt) does. Tickets are also kept apart per profile instance (an ALPN
+/// variant made with WithAlpn counts as its original), so a ticket never links connections made under different profiles, even ones
+/// with identical ClientHellos such as Chromium and Edge; and per certificate validator, because a resumed session skips certificate
+/// validation: a ticket obtained under a lax validator must not let a stricter one connect unchecked.</remarks>
 public sealed class TlsSessionCache
 {
     private const int MaxTicketsPerHost = 8;
 
-    private readonly ConcurrentDictionary<string, ConcurrentQueue<SessionTicket>> _tickets = new();
+    private readonly ConcurrentDictionary<(string Host, int Port, TlsProfile Scope, IServerCertificateValidator Validator), ConcurrentQueue<SessionTicket>> _tickets = new();
 
-    internal void Add(string host, int port, TlsProfile profile, SessionTicket ticket)
+    internal void Add(string host, int port, TlsProfile profile, IServerCertificateValidator validator, SessionTicket ticket)
     {
-        var queue = _tickets.GetOrAdd(Key(host, port, profile), static _ => new ConcurrentQueue<SessionTicket>());
+        var queue = _tickets.GetOrAdd(Key(host, port, profile, validator), static _ => new ConcurrentQueue<SessionTicket>());
         queue.Enqueue(ticket);
         while (queue.Count > MaxTicketsPerHost && queue.TryDequeue(out _))
         {
         }
     }
 
-    internal SessionTicket? Take(string host, int port, TlsProfile profile)
+    internal SessionTicket? Take(string host, int port, TlsProfile profile, IServerCertificateValidator validator)
     {
-        if (!_tickets.TryGetValue(Key(host, port, profile), out var queue))
+        if (!_tickets.TryGetValue(Key(host, port, profile, validator), out var queue))
         {
             return null;
         }
@@ -58,7 +60,7 @@ public sealed class TlsSessionCache
         return null;
     }
 
-    // Not the TlsProfile record itself: its lists compare by reference, so a profile rebuilt per connection (WithAlpn) would never match.
-    private static string Key(string host, int port, TlsProfile profile) =>
-        $"{host}:{port}|{string.Join(',', profile.CipherSuites)}|{string.Join(',', profile.Extensions.Select(static extension => extension.Type))}";
+    // TlsProfile equality compares its lists by reference, so distinct profile instances never share a key.
+    private static (string, int, TlsProfile, IServerCertificateValidator) Key(string host, int port, TlsProfile profile, IServerCertificateValidator validator) =>
+        (host, port, profile.SessionScope ?? profile, validator);
 }

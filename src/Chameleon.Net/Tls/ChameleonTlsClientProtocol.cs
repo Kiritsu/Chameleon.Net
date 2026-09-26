@@ -38,6 +38,15 @@ internal sealed class ChameleonTlsClientProtocol : TlsClientProtocol
     /// <summary>Whether the server accepted the offered ticket (no certificate was exchanged).</summary>
     public bool SessionResumed { get; private set; }
 
+    /// <summary>Whether a ServerHello (or HelloRetryRequest) arrived: a handshake that failed before it may have been rejected over the ticket.</summary>
+    public bool ServerHelloReceived { get; private set; }
+
+    protected override ServerHello ReceiveServerHelloMessage(MemoryStream buf)
+    {
+        ServerHelloReceived = true;
+        return base.ReceiveServerHelloMessage(buf);
+    }
+
     protected override void SendClientHelloMessage()
     {
         var afterRetry = _initialHelloSent;

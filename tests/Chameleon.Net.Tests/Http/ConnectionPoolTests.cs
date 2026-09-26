@@ -46,6 +46,26 @@ public sealed class ConnectionPoolTests
         Assert.Equal([0, 1], server.Requests.Select(static r => r.Connection));
     }
 
+    /// <summary>A body that can't be replayed isn't risked on a connection idle past OkHttp's health-check threshold (10 s).</summary>
+    [Fact]
+    public async Task StreamedBodySkipsConnectionsIdlePastTheHealthThreshold()
+    {
+        await using var server = new LoopbackHttpServer(static request => Reply.Ok(request.BodyText));
+        using var handler = new ChameleonHttpMessageHandler(BuiltInProfiles.OkHttp4Android13);
+        using var client = new HttpClient(handler);
+
+        await client.GetStringAsync(server.Url("/first"), CancellationToken);
+        await client.PostAsync(server.Url("/fresh"), Streamed("a"), CancellationToken);
+        handler.Pool.HealthyIdle = TimeSpan.Zero;
+        await client.PostAsync(server.Url("/stale"), Streamed("b"), CancellationToken);
+        await client.PostAsync(server.Url("/replayable"), new StringContent("c"), CancellationToken);
+
+        // Recently idle: reused. Past the threshold: a new connection for the streamed body; replayable bodies still reuse.
+        Assert.Equal([0, 0, 1, 1], server.Requests.Select(static r => r.Connection));
+
+        static StreamContent Streamed(string text) => new(new NonSeekableStream(Encoding.UTF8.GetBytes(text)));
+    }
+
     [Fact]
     public async Task StreamedBodyIsNotReplayed()
     {

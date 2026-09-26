@@ -111,7 +111,7 @@ matching record, in that order:
 | 18 | `SignedCertificateTimestampExtension` | none |
 | 21 | `PaddingExtension` | see §3.3 |
 | 23 | `ExtendedMasterSecretExtension` | none |
-| 27 | `CompressCertificateExtension` | algorithm ids (2 = brotli, 1 = zlib, 3 = zstd — offered faithfully, but a server that picks zstd fails the handshake for now) |
+| 27 | `CompressCertificateExtension` | algorithm ids (2 = brotli, 1 = zlib, 3 = zstd) |
 | 28 | `RecordSizeLimitExtension` | the limit |
 | 34 | `DelegatedCredentialsExtension` | scheme ids |
 | 35 | `SessionTicketExtension` | none on a fresh connection |
@@ -167,8 +167,7 @@ Listing an extension is not the same as surviving the server's reply to it. Cham
 these BouncyCastle 2.6 gaps itself, each checked live against Cloudflare and Google:
 
 - `X25519MLKEM768` (0x11EC = 4588), `SecP256r1MLKEM768`, `SecP384r1MLKEM1024` key shares.
-- `compress_certificate` (27) with brotli (2) or zlib (1). zstd (3) is **not** supported: a server
-  that picks it fails the handshake, so don't list 3 unless the target never selects it.
+- `compress_certificate` (27) with brotli (2), zlib (1) or zstd (3).
 - ALPS (17513 / 17613): when the server accepts it, the client answers with its (empty) settings
   before Finished, as BoringSSL does.
 - GREASE ECH (65037): the server's retry configs in EncryptedExtensions are accepted and ignored.
@@ -232,8 +231,8 @@ only sends over HTTP/2 (Chrome's `priority`) go in `Http2OnlyHeaders`. Name casi
 comes from the spelling in the order list (`HeaderCasing.AsSpecified`): Chrome writes
 `User-Agent` but `sec-ch-ua`.
 
-Chameleon.Net decodes gzip, deflate and br. A server that picks `zstd` (Chrome advertises it) returns
-the body undecoded with `Content-Encoding: zstd` kept.
+Chameleon.Net decodes gzip, deflate, br and zstd when the Accept-Encoding came from the profile; if the
+caller sets Accept-Encoding itself, the body is returned as sent, like OkHttp does.
 
 For an *app-specific* profile (an app on top of OkHttp), copy the app's own `User-Agent` and
 extra headers here; the TLS and H2 layers stay those of the library.
@@ -321,4 +320,4 @@ fingerprint, first stream id and HEADERS priority for Chameleon.Net as it did fo
 | HTTP/2 | tls.peet.ws `sent_frames` | `1:65536;2:0;4:131072;5:16384\|12517377\|0\|m,p,a,s`; first request on stream 3; weight 42 navigation / 22 fetch, not exclusive; `te: trailers` only on HTTP/2 |
 | Fetch, navigation, cookies | local page over HTTP/1.1 (the page sets a cookie) | one `HeaderOrder` fits every kind; Cookie right after Connection |
 | WebSocket | `new WebSocket(...)` from the local page | `HandshakeHeaderOrder`; Sec-Fetch-Mode `websocket`; plain `permessage-deflate` |
-| Not supported | delegated credentials, zstd certificate compression | offered like Firefox does; Cloudflare, Google, GitHub, mozilla.org and example.com don't use them on it |
+| Not supported | delegated credentials | offered like Firefox does; Cloudflare, Google, GitHub, mozilla.org and example.com don't use them on it |

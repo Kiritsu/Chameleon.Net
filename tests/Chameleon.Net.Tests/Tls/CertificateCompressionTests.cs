@@ -11,11 +11,12 @@ public sealed class CertificateCompressionTests
     [Theory]
     [InlineData(CertificateCompression.Brotli)]
     [InlineData(CertificateCompression.Zlib)]
+    [InlineData(CertificateCompression.Zstd)]
     public void RoundTrips(ushort algorithm)
     {
         var body = Body(algorithm, Compress(algorithm, CertificateMessage), CertificateMessage.Length);
 
-        Assert.Equal(CertificateMessage, CertificateCompression.Decompress(body, [CertificateCompression.Brotli, CertificateCompression.Zlib]));
+        Assert.Equal(CertificateMessage, CertificateCompression.Decompress(body, [CertificateCompression.Zlib, CertificateCompression.Brotli, CertificateCompression.Zstd]));
     }
 
     [Fact]
@@ -35,9 +36,17 @@ public sealed class CertificateCompressionTests
     }
 
     [Fact]
-    public void ZstdIsRejectedEvenWhenOffered()
+    public void CorruptZstdIsRejected()
     {
         AssertBadCertificate(() => CertificateCompression.Decompress(Body(CertificateCompression.Zstd, [1, 2, 3], 10), [CertificateCompression.Zstd]));
+    }
+
+    [Fact]
+    public void ZstdExpandingBeyondTheAnnouncedLengthIsRejected()
+    {
+        var body = Body(CertificateCompression.Zstd, Compress(CertificateCompression.Zstd, CertificateMessage), CertificateMessage.Length - 1);
+
+        AssertBadCertificate(() => CertificateCompression.Decompress(body, [CertificateCompression.Zstd]));
     }
 
     [Fact]
@@ -59,6 +68,12 @@ public sealed class CertificateCompressionTests
 
     private static byte[] Compress(ushort algorithm, byte[] data)
     {
+        if (algorithm == CertificateCompression.Zstd)
+        {
+            using var zstd = new ZstdSharp.Compressor();
+            return zstd.Wrap(data).ToArray();
+        }
+
         using var output = new MemoryStream();
         using (Stream compressor = algorithm == CertificateCompression.Brotli
                    ? new BrotliStream(output, CompressionLevel.Optimal, leaveOpen: true)

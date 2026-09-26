@@ -59,6 +59,21 @@ public sealed class WebSocketOptionsTests
     }
 
     [Fact]
+    public async Task CancellingDuringTheTlsHandshakeThrowsOperationCanceled()
+    {
+        // Accepts TCP connections but never answers the ClientHello.
+        using var silent = new TcpListener(IPAddress.Loopback, 0);
+        silent.Start();
+        var port = ((IPEndPoint)silent.LocalEndpoint).Port;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken);
+        cancellation.CancelAfter(TimeSpan.FromMilliseconds(300));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new ChameleonWebSocketConnector().ConnectAsync(new Uri($"wss://127.0.0.1:{port}/"), Profile, cancellationToken: cancellation.Token))
+            .WaitAsync(TimeSpan.FromSeconds(10), CancellationToken);
+    }
+
+    [Fact]
     public async Task ConnectTimeoutCoversTheTlsHandshake()
     {
         // Accepts TCP connections but never answers the ClientHello.

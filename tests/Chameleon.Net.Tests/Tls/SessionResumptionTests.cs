@@ -74,27 +74,38 @@ public sealed class SessionResumptionTests
     {
         var cache = new TlsSessionCache();
         var okhttp = BuiltInProfiles.OkHttp4Android13.Tls;
+        var validator = new TrustAnyCertificate();
         var expired = new SessionTicket([1], Psk, 0, CryptoHashAlgorithm.sha256, 0, Stopwatch.GetTimestamp(), TimeSpan.Zero);
         var live = new SessionTicket([2], Psk, 0, CryptoHashAlgorithm.sha256, 0, Stopwatch.GetTimestamp(), TimeSpan.FromHours(1));
 
-        cache.Add("example.com", 443, okhttp, expired);
-        cache.Add("example.com", 443, okhttp, live);
+        cache.Add("example.com", 443, okhttp, validator, expired);
+        cache.Add("example.com", 443, okhttp, validator, live);
 
-        Assert.Same(live, cache.Take("example.com", 443, okhttp));
-        Assert.Null(cache.Take("example.com", 443, okhttp));
+        Assert.Same(live, cache.Take("example.com", 443, okhttp, validator));
+        Assert.Null(cache.Take("example.com", 443, okhttp, validator));
     }
 
     [Fact]
-    public void TicketsAreSharedAcrossAlpnVariantsButNotAcrossProfiles()
+    public void TicketsAreSharedAcrossAlpnVariantsButNotAcrossProfilesOrValidators()
     {
         var cache = new TlsSessionCache();
-        var okhttp = BuiltInProfiles.OkHttp4Android13.Tls;
-        cache.Add("example.com", 443, okhttp, new SessionTicket([1], Psk, 0, CryptoHashAlgorithm.sha256, 0, Stopwatch.GetTimestamp(), TimeSpan.FromHours(1)));
+        var validator = new TrustAnyCertificate();
+        void Add(TlsProfile profile) =>
+            cache.Add("example.com", 443, profile, validator, new SessionTicket([1], Psk, 0, CryptoHashAlgorithm.sha256, 0, Stopwatch.GetTimestamp(), TimeSpan.FromHours(1)));
 
-        Assert.Null(cache.Take("example.com", 443, BuiltInProfiles.Chromium152Windows.Tls));
-        Assert.Null(cache.Take("example.com", 8443, okhttp));
+        var okhttp = BuiltInProfiles.OkHttp4Android13.Tls;
+        Add(okhttp);
+        Assert.Null(cache.Take("example.com", 443, BuiltInProfiles.Chromium152Windows.Tls, validator));
+        Assert.Null(cache.Take("example.com", 8443, okhttp, validator));
+        // A resumed session skips certificate validation: a stricter validator must not use a ticket the lax one obtained.
+        Assert.Null(cache.Take("example.com", 443, okhttp, new SystemCertificateValidator()));
         // OkHttp's WebSocket connection (ALPN http/1.1 only) resumes the session of its REST calls: one Conscrypt cache per host.
-        Assert.NotNull(cache.Take("example.com", 443, okhttp.WithAlpn(["http/1.1"])));
+        Assert.NotNull(cache.Take("example.com", 443, okhttp.WithAlpn(["http/1.1"]), validator));
+
+        // Chromium and Edge send identical ClientHellos, but rotating between them must not let one resume the other's session.
+        Add(BuiltInProfiles.Chromium152Windows.Tls);
+        Assert.Null(cache.Take("example.com", 443, BuiltInProfiles.Edge153Windows.Tls, validator));
+        Assert.NotNull(cache.Take("example.com", 443, BuiltInProfiles.Chromium152Windows.Tls.WithAlpn(["http/1.1"]), validator));
     }
 
     /// <summary>End to end against the OS TLS stack (SChannel on Windows) through Kestrel: tickets it issues are taken and accepted.</summary>
@@ -155,6 +166,70 @@ public sealed class SessionResumptionTests
 
         Assert.Contains(logs.Messages, static m => m.StartsWith("Connected to 127.0.0.1:", StringComparison.Ordinal) && m.EndsWith("protocol h2, TLS session resumed: False", StringComparison.Ordinal));
         Assert.Contains(logs.Messages, static m => m.StartsWith("WebSocket to wss://127.0.0.1:", StringComparison.Ordinal) && m.EndsWith("TLS session resumed: True", StringComparison.Ordinal));
+    }
+
+    /// <summary>Only a failure before the ServerHello may be the ticket's fault and earns a retry without it.</summary>
+    [Fact]
+    public async Task TicketlessRetryOnlyFollowsFailuresBeforeTheServerHello()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var tls = BuiltInProfiles.OkHttp4Android13.Tls;
+        var bogus = new SessionTicket([7, 7, 7], Psk, PrfAlgorithm.tls13_hkdf_sha256, CryptoHashAlgorithm.sha256, 0, Stopwatch.GetTimestamp(), TimeSpan.FromHours(1));
+
+        // Before the ServerHello (SChannel does this for a ticket it can't use): maybe the ticket's fault, so one retry without it.
+        Assert.Equal(2, await ConnectionsUntilFailure(serverHello: null));
+
+        // After the ServerHello (here a malformed one): not the ticket's doing, so no second connection.
+        Assert.Equal(1, await ConnectionsUntilFailure(serverHello: [0x16, 0x03, 0x03, 0x00, 0x08, 0x02, 0x00, 0x00, 0x04, 0x03, 0x03, 0x00, 0x00]));
+
+        async Task<int> ConnectionsUntilFailure(byte[]? serverHello)
+        {
+            using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            var serving = Task.Run(async () =>
+            {
+                while (true)
+                {
+                    using var client = await listener.AcceptTcpClientAsync(cancellationToken);
+                    var stream = client.GetStream();
+                    await stream.ReadAtLeastAsync(new byte[16384], 1, throwOnEndOfStream: false, cancellationToken);
+                    if (serverHello is not null)
+                    {
+                        await stream.WriteAsync(serverHello, cancellationToken);
+                        await stream.ReadAtLeastAsync(new byte[16384], 1, throwOnEndOfStream: false, cancellationToken);
+                    }
+                }
+            }, cancellationToken);
+
+            var validator = new TrustAnyCertificate();
+            var (factory, transport) = FactoryWithTicket(validator, "127.0.0.1", port, tls, bogus);
+            await Assert.ThrowsAnyAsync<IOException>(() => factory.ConnectAsync(transport, "127.0.0.1", port, tls, cancellationToken));
+            listener.Stop();
+            await Assert.ThrowsAnyAsync<Exception>(() => serving.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken));
+            return transport.Connections;
+        }
+    }
+
+    private static (BouncyCastleTlsConnectionFactory Factory, CountingTransport Transport) FactoryWithTicket(
+        IServerCertificateValidator validator, string host, int port, TlsProfile tls, SessionTicket ticket)
+    {
+        var factory = new BouncyCastleTlsConnectionFactory(new ProfileTlsClientFactory(), new ClientHelloEncoder(new SecureRandom()), validator, new SecureRandom());
+        factory.SessionCache.Add(host, port, tls, validator, ticket);
+        return (factory, new CountingTransport());
+    }
+
+    private sealed class CountingTransport : ITransport
+    {
+        private int _connections;
+
+        public int Connections => Volatile.Read(ref _connections);
+
+        public Task<Stream> ConnectAsync(System.Net.DnsEndPoint endpoint, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _connections);
+            return new TcpTransport().ConnectAsync(endpoint, cancellationToken);
+        }
     }
 
     private static async Task<(bool Resumed, string Response)> GetAsync(BouncyCastleTlsConnectionFactory factory, int port, TlsProfile tls)

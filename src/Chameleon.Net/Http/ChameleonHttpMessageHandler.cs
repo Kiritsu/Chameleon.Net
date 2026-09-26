@@ -20,6 +20,8 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
     private const int MaxRefusedStreamAttempts = 20;
 
     private readonly ConnectionPool _pool;
+
+    internal ConnectionPool Pool => _pool;
     private readonly bool _allowAutoRedirect;
     private readonly int _maxAutomaticRedirections;
     private readonly CookieContainer? _cookies;
@@ -129,7 +131,7 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
         var refusals = 0;
         for (var attempt = 1; ; attempt++)
         {
-            var connection = await _pool.RentAsync(origin, http2PriorKnowledge, cancellationToken).ConfigureAwait(false);
+            var connection = await _pool.RentAsync(origin, http2PriorKnowledge, HttpContentReplay.IsReplayable(request.Content), cancellationToken).ConfigureAwait(false);
             try
             {
                 response = await connection.SendAsync(request, kind, cookieHeader, cancellationToken).ConfigureAwait(false);

@@ -118,6 +118,21 @@ public sealed class ChameleonHttpMessageHandlerTests
         Assert.Equal("hello world", await client.GetStringAsync(server.Url("/"), CancellationToken));
     }
 
+    /// <summary>The browser profiles advertise zstd (as the browsers do), and servers such as facebook.com answer with it.</summary>
+    [Fact]
+    public async Task ZstdIsDecodedForBrowserProfilesAndTheConnectionIsReused()
+    {
+        await using var server = new LoopbackHttpServer(static request => ZstdReply($"hello zstd {request.Path}"));
+        using var client = new HttpClient(new ChameleonHttpMessageHandler(BuiltInProfiles.Chromium152Windows));
+
+        using var first = await client.GetAsync(server.Url("/one"), CancellationToken);
+        Assert.Equal("hello zstd /one", await first.Content.ReadAsStringAsync(CancellationToken));
+        Assert.Empty(first.Content.Headers.ContentEncoding);
+        Assert.Equal("hello zstd /two", await client.GetStringAsync(server.Url("/two"), CancellationToken));
+
+        Assert.Equal([0, 0], server.Requests.Select(static r => r.Connection));
+    }
+
     [Fact]
     public async Task GzipIsDecodedWhenTheProfileAskedForIt()
     {
@@ -312,6 +327,14 @@ public sealed class ChameleonHttpMessageHandlerTests
     }
 
     private static HttpClient Client(ChameleonOptions? options = null) => new(new ChameleonHttpMessageHandler(Profile, options));
+
+    private static Reply ZstdReply(string body)
+    {
+        using var zstd = new ZstdSharp.Compressor();
+        var compressed = zstd.Wrap(Encoding.UTF8.GetBytes(body)).ToArray();
+        var head = $"HTTP/1.1 200 OK\r\nContent-Encoding: zstd\r\nContent-Length: {compressed.Length}\r\n\r\n";
+        return new Reply([.. Encoding.Latin1.GetBytes(head), .. compressed]);
+    }
 
     private static Reply GzipReply(string body)
     {

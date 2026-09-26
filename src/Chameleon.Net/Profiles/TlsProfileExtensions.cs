@@ -6,5 +6,6 @@ internal static class TlsProfileExtensions
     public static TlsProfile WithAlpn(this TlsProfile tls, IReadOnlyList<string> protocols) => tls with
     {
         Extensions = [.. tls.Extensions.Select(extension => extension is AlpnExtension ? new AlpnExtension(protocols) : extension)],
+        SessionScope = tls.SessionScope ?? tls,
     };
 }
