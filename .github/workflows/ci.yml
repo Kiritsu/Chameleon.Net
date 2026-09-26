@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       live:
-        description: Also run the live tests (real network: tls.peet.ws, Cloudflare, Google, ...)
+        description: "Also run the live tests (real network: tls.peet.ws, Cloudflare, Google, ...)"
         type: boolean
         default: false
 
