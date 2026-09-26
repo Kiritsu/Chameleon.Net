@@ -13,6 +13,17 @@ public sealed class BouncyCastleTlsConnectionFactory : ITlsConnectionFactory
     private readonly IServerCertificateValidator _certificateValidator;
     private readonly SecureRandom _random;
 
+    /// <summary>Profile-driven client hello, OS trust store validation.</summary>
+    public BouncyCastleTlsConnectionFactory()
+        : this(new SecureRandom())
+    {
+    }
+
+    private BouncyCastleTlsConnectionFactory(SecureRandom random)
+        : this(new ProfileTlsClientFactory(), new ClientHelloEncoder(random), new SystemCertificateValidator(), random)
+    {
+    }
+
     public BouncyCastleTlsConnectionFactory(
         ITlsClientFactory clientFactory,
         IClientHelloEncoder encoder,
@@ -48,7 +59,7 @@ public sealed class BouncyCastleTlsConnectionFactory : ITlsConnectionFactory
             await using var abort = cancellationToken.Register(static state => ((Stream)state!).Dispose(), stream).ConfigureAwait(false);
             await Task.Run(() => protocol.Connect(client), cancellationToken).ConfigureAwait(false);
 
-            return new TlsConnection(protocol.Stream, protocol.NegotiatedApplicationProtocol);
+            return new TlsConnection(new DuplexTlsStream(protocol.Stream, stream), protocol.NegotiatedApplicationProtocol);
         }
         catch
         {

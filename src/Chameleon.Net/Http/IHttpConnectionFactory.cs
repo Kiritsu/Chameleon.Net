@@ -1,9 +1,0 @@
-using System.Net;
-using Chameleon.Net.Profiles;
-
-namespace Chameleon.Net.Http;
-
-public interface IHttpConnectionFactory
-{
-    Task<IHttpConnection> OpenAsync(Origin origin, ClientProfile profile, IWebProxy? proxy, CancellationToken cancellationToken = default);
-}

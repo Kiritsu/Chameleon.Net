@@ -12,4 +12,8 @@
         <PackageReference Include="BouncyCastle.Cryptography" />
         <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Chameleon.Net.Tests" />
+    </ItemGroup>
 </Project>
