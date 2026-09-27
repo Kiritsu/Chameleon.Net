@@ -168,3 +168,29 @@ dotnet test --solution Chameleon.Net.slnx -- --explicit only
 
 CI runs the offline tests on Linux and Windows for every push and pull request; the live tests can be started by hand
 from the Actions tab.
+
+## Versioning and releases
+
+Versions come from git tags, through [MinVer](https://github.com/adamralph/minver), following
+[semantic versioning](https://semver.org/). Nothing in the repository holds a version number.
+
+- A commit tagged `v1.2.3` builds as `1.2.3`, and `v1.2.3-preview.1` as `1.2.3-preview.1`.
+- Commits after the latest tag build as the next patch preview, e.g. `1.2.4-preview.0.5` five commits after `v1.2.3`.
+  Before any tag it's `0.0.0-preview.0.N`.
+
+To release, tag the commit and push the tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `Release` workflow then builds, tests, packs, publishes the package to nuget.org and creates a GitHub release with
+the packages attached (marked as pre-release when the version has a suffix). It publishes through nuget.org
+[trusted publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing), so no API key is stored: it needs
+a trusted publishing policy on nuget.org for this repository and `release.yml`, and a `NUGET_USER` repository secret
+with the nuget.org user name.
+
+## License
+
+[MIT](LICENSE).
