@@ -4,30 +4,15 @@
     </PropertyGroup>
 
     <PropertyGroup>
-        <IsPackable>true</IsPackable>
         <PackageId>Chameleon.Net</PackageId>
         <Description>HttpClient handler and WebSocket connector whose TLS ClientHello, HTTP/2 frames and HTTP headers match a real client (OkHttp on Android, Chromium, Edge, Firefox). TLS by BouncyCastle.</Description>
         <PackageTags>tls;ja3;ja4;fingerprint;http2;okhttp;chrome;firefox;websocket;bouncycastle</PackageTags>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <PackageReadmeFile>README.md</PackageReadmeFile>
-        <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
-    </PropertyGroup>
-
-    <!-- Versions come from git tags (v1.2.3); see README "Versioning and releases". -->
-    <PropertyGroup>
-        <MinVerTagPrefix>v</MinVerTagPrefix>
-        <MinVerDefaultPreReleaseIdentifiers>preview.0</MinVerDefaultPreReleaseIdentifiers>
     </PropertyGroup>
 
     <ItemGroup>
         <PackageReference Include="BouncyCastle.Cryptography" />
         <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
         <PackageReference Include="ZstdSharp.Port" />
-        <PackageReference Include="MinVer" PrivateAssets="all" />
-    </ItemGroup>
-
-    <ItemGroup>
-        <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
     </ItemGroup>
 
     <ItemGroup>

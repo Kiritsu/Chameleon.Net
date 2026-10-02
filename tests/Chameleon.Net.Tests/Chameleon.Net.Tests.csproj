@@ -7,6 +7,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\Chameleon.Net\Chameleon.Net.csproj" />
+        <ProjectReference Include="..\..\src\Chameleon.Net.Extensions.Http\Chameleon.Net.Extensions.Http.csproj" />
     </ItemGroup>
 
     <ItemGroup>

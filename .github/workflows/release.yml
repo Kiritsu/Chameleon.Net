@@ -32,7 +32,7 @@ jobs:
         run: dotnet test --solution Chameleon.Net.slnx -c Release --no-build
 
       - name: Pack
-        run: dotnet pack src/Chameleon.Net/Chameleon.Net.csproj -c Release --no-build -o artifacts
+        run: dotnet pack Chameleon.Net.slnx -c Release --no-build -o artifacts
 
       # Trusted publishing: no stored API key. Needs a policy on nuget.org for this repository and release.yml,
       # and the NUGET_USER secret (your nuget.org user name).

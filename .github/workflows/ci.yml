@@ -51,7 +51,7 @@ jobs:
 
       - name: Pack
         if: matrix.os == 'ubuntu-latest'
-        run: dotnet pack src/Chameleon.Net/Chameleon.Net.csproj -c Release --no-build -o artifacts
+        run: dotnet pack Chameleon.Net.slnx -c Release --no-build -o artifacts
 
       - uses: actions/upload-artifact@v7
         if: matrix.os == 'ubuntu-latest'

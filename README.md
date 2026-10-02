@@ -136,6 +136,32 @@ var connector = new ChameleonWebSocketConnector(options);
 - **`CertificateValidator`**: defaults to the OS trust store.
 - **`ConnectTimeout`**, **`AllowAutoRedirect`**, **`MaxAutomaticRedirections`**, **`LoggerFactory`**.
 
+### IHttpClientFactory and dependency injection
+
+The `Chameleon.Net.Extensions.Http` package plugs the handler into `IHttpClientFactory`:
+
+```csharp
+services.AddHttpClient("api", client => client.BaseAddress = new Uri("https://api.example.com/"))
+    .UseChameleon(BuiltInProfiles.OkHttp4Android13, options => options.Cookies = new CookieContainer());
+
+services.AddHttpClient<GitHubClient>()
+    .UseChameleon(BuiltInProfiles.Chromium152Windows);
+
+// Profile selection or options taken from the container:
+services.AddHttpClient("rotating")
+    .UseChameleon((provider, options) => options.ProfileSelector = provider.GetRequiredService<IProfileSelector>());
+
+services.AddChameleonWebSocketConnector(); // ChameleonWebSocketConnector and IWebSocketConnector, as singletons
+```
+
+- Logging goes to the container's `ILoggerFactory`.
+- Every client and the WebSocket connector share one `TlsSessionCache`, so a WebSocket resumes the TLS session of earlier
+  requests to the same host, like one OkHttpClient used for both. Tickets are still kept apart per profile and per
+  certificate validator.
+- `UseChameleon` sets the handler lifetime to infinite. The handler closes idle connections itself (OkHttp's pool
+  rules), and IHttpClientFactory's default two-minute rotation would throw away its connections, TLS sessions and
+  cookies, which the real clients keep. Call `SetHandlerLifetime` afterwards to change it.
+
 ### Checking a fingerprint
 
 `TlsFingerprinter.Compute(ClientHelloParser.Parse(bytes))` gives JA3, JA4 and JA4_r for a captured ClientHello
@@ -187,9 +213,10 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The `Release` workflow then builds, tests, packs, publishes the package to nuget.org and creates a GitHub release with
+The `Release` workflow then builds, tests, packs, publishes the packages to nuget.org and creates a GitHub release with
 the packages attached (marked as pre-release when the version has a suffix). It publishes through nuget.org
-[trusted publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing), so no API key is stored: it needs
+[trusted publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing), so no API key is stored. Both packages
+(`Chameleon.Net` and `Chameleon.Net.Extensions.Http`) are released together, with the same version. Publishing needs
 a trusted publishing policy on nuget.org for this repository and `release.yml`, and a `NUGET_USER` repository secret
 with the nuget.org user name.
 

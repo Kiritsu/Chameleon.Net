@@ -7,6 +7,7 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Chameleon.Net/Chameleon.Net.csproj" />
+    <Project Path="src/Chameleon.Net.Extensions.Http/Chameleon.Net.Extensions.Http.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Chameleon.Net.Tests/Chameleon.Net.Tests.csproj" />

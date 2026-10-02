@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <PackageId>Chameleon.Net.Extensions.Http</PackageId>
+        <Description>IHttpClientFactory and dependency-injection integration for Chameleon.Net: httpClientBuilder.UseChameleon(profile).</Description>
+        <PackageTags>tls;ja3;ja4;fingerprint;httpclientfactory;dependency-injection;okhttp;chrome;firefox</PackageTags>
+        <RootNamespace>Microsoft.Extensions.DependencyInjection</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Chameleon.Net\Chameleon.Net.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.Http" />
+    </ItemGroup>
+</Project>
