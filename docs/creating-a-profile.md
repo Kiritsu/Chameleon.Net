@@ -78,6 +78,9 @@ headless with a throwaway profile directory and a remote-debugging port
 and `script.evaluate` `document.body.innerText` or a `fetch(...)`. Set
 `user_pref("devtools.jsonview.enabled", false)` in the profile's `user.js` so the JSON comes back as
 text. Launch it several times: each launch is a fresh TLS session, and the diff shows what varies.
+Chromium-based browsers (Chrome, Edge) work the same way over the Chrome DevTools Protocol, which is how
+`Edge153Windows` was built: `msedge --headless=new --user-data-dir=<empty dir> --remote-debugging-port=9444`,
+then `Page.navigate` and `Runtime.evaluate` on the page target listed at `http://127.0.0.1:9444/json/list`.
 Headless doesn't change the TLS or HTTP/2 layers, but check the User-Agent (headless Chromium says
 `HeadlessChrome`).
 
@@ -145,7 +148,10 @@ check that it appears (or not) at the same hello sizes.
 Diff two captures of the same client. These change per connection and are handled by the
 encoder or by BouncyCastle, never written into the profile:
 
-- **GREASE values** — drawn from the 16 reserved values each time. Only the *placement* is data.
+- **GREASE values** — drawn from the 16 reserved values for each connection. Only the *placement* is data.
+  The encoder keeps them fixed for the whole connection (a ClientHello retried after HelloRetryRequest
+  reuses them, and leaves out the GREASE key share), and gives `key_share` the same GREASE group as
+  `supported_groups`, as BoringSSL does.
 - **Chrome extension order** — since Chrome 110 it is shuffled per connection, with GREASE pinned
   first/last and padding last. Set `ExtensionShufflePolicy.Chrome` and write the extensions in any
   one captured order, keeping the leading `GreaseExtension` first and the trailing
@@ -158,8 +164,9 @@ encoder or by BouncyCastle, never written into the profile:
   (like BoringSSL, each ticket once) and appends `pre_shared_key` last on its own
   (`ChameleonOptions.TlsSessionResumption` turns this off).
 - **`session_ticket` body** — present and empty on a fresh connection.
-- **GREASE ECH payload length** — BoringSSL picks 144, 176, 208 or 240 bytes per connection; the
-  encoder does the same.
+- **GREASE ECH AEAD and payload length** — picked per connection: BoringSSL uses AES-128-GCM and 144,
+  176, 208 or 240 bytes, NSS AES-128-GCM or ChaCha20-Poly1305 and always 240. Only the choices are
+  data (`EncryptedClientHelloGreaseExtension` parameters, §3.2).
 
 ### 3.5 Check what the handshake layer can negotiate
 
@@ -171,6 +178,11 @@ these BouncyCastle 2.6 gaps itself, each checked live against Cloudflare and Goo
 - ALPS (17513 / 17613): when the server accepts it, the client answers with its (empty) settings
   before Finished, as BoringSSL does.
 - GREASE ECH (65037): the server's retry configs in EncryptedExtensions are accepted and ignored.
+- TLS 1.3 session resumption: tickets from NewSessionTicket are kept and offered on later connections
+  (`pre_shared_key` with a resumption binder), which BouncyCastle doesn't do on its own.
+- HelloRetryRequest: the second ClientHello keeps the first one's GREASE values and extension order.
+  A retry that asks for a hybrid post-quantum group the profile lists without a key share isn't
+  supported, so send the hybrid share whenever you list the group.
 
 Anything else new: run the live handshake (§7) against the real target before trusting it.
 
@@ -227,9 +239,9 @@ profile position, whoever set it.
 `Accept`, `Accept-Language`, `Accept-Encoding`, `Sec-CH-UA*` for Chromium. Browsers send different
 defaults per request kind (a navigation's `Accept`/`Sec-Fetch-*` vs a `fetch()`'s, and a WebSocket
 handshake adds `Pragma`/`Cache-Control`): put them in `DefaultHeaderOverrides`. Headers a browser
-only sends over HTTP/2 (Chrome's `priority`) go in `Http2OnlyHeaders`. Name casing on HTTP/1.1
-comes from the spelling in the order list (`HeaderCasing.AsSpecified`): Chrome writes
-`User-Agent` but `sec-ch-ua`.
+only sends over HTTP/2 (Chrome's `priority`, Firefox's `te: trailers`) go in `Http2OnlyHeaders`.
+Name casing on HTTP/1.1 comes from the spelling in the order list (`HeaderCasing.AsSpecified`):
+Chrome writes `User-Agent` but `sec-ch-ua`.
 
 Chameleon.Net decodes gzip, deflate, br and zstd when the Accept-Encoding came from the profile; if the
 caller sets Accept-Encoding itself, the body is returned as sent, like OkHttp does.
@@ -243,7 +255,7 @@ Capture (or read) the Upgrade request:
 
 - header order → `HandshakeHeaderOrder`
 - the literal `Sec-WebSocket-Extensions` value → `PerMessageDeflateOffer`
-  (Chrome: `permessage-deflate; client_max_window_bits`; OkHttp ≥ 4.9: `permessage-deflate`;
+  (Chrome: `permessage-deflate; client_max_window_bits`; Firefox and OkHttp ≥ 4.9: `permessage-deflate`;
   null if the client does not offer compression)
 - ALPN on WebSocket connections, if it differs from ordinary requests → `Alpn`
   (OkHttp forces `http/1.1`. Chrome uses `http/1.1` for WebSocket connections unless it can reuse
@@ -254,10 +266,11 @@ Capture (or read) the Upgrade request:
 ## 7. Verify before shipping
 
 1. Put the expected `ja3_full`, `ja4_r` and Akamai strings in the profile's `<summary>`.
-2. Add a golden test next to `tests/Chameleon.Net.Tests/Tls/OkHttp4Android13GoldenTests.cs`:
+2. Add a golden test in `tests/Chameleon.Net.Tests/Profiles/` (see `Firefox156WindowsGoldenTests`):
    `ClientHelloCapture.CaptureAsync` runs the real pipeline offline, then
    `ClientHelloParser.Parse` + `TlsFingerprinter.Compute` produce the strings to assert. For
-   shuffled/GREASE profiles assert JA4/JA4_r (stable), not JA3.
+   profiles with Chrome's extension shuffle assert JA4/JA4_r (stable), not JA3; GREASE alone doesn't
+   change JA3, which leaves GREASE values out.
 3. Against the network: connect to an echo service that reports JA3/JA4/Akamai as observed
    (tls.peet.ws is the common one) and compare with the real client's result on the *same*
    service. Treat third-party echo services as a spot check, not a test dependency.
@@ -321,3 +334,17 @@ fingerprint, first stream id and HEADERS priority for Chameleon.Net as it did fo
 | Fetch, navigation, cookies | local page over HTTP/1.1 (the page sets a cookie) | one `HeaderOrder` fits every kind; Cookie right after Connection |
 | WebSocket | `new WebSocket(...)` from the local page | `HandshakeHeaderOrder`; Sec-Fetch-Mode `websocket`; plain `permessage-deflate` |
 | Not supported | delegated credentials | offered like Firefox does; Cloudflare, Google, GitHub, mozilla.org and example.com don't use them on it |
+
+## Worked example: `BuiltInProfiles.Edge153Windows`
+
+Captured on 2026-09-26 from Edge 153.0.4234.48 on Windows with the scripted method of §2 (CDP,
+headless, three fresh launches). Below the brand strings it is the same client as Chromium 152, so
+it reuses the Chromium profile's TLS, HTTP/2, header-order and WebSocket builders and only passes
+its own User-Agent, `sec-ch-ua` brands and navigation client hints. `Edge153WindowsGoldenTests` and
+the explicit `EchoServiceSeesTheEdgeCapture` test check it like the others.
+
+| Layer | Source | Result |
+|---|---|---|
+| ClientHello, HTTP/2 | tls.peet.ws, 3 launches | identical to Chromium 152: JA4 `t13d1516h2_8daaf6152771_806a8c22fdea`, same Akamai string; a resumed connection showed `t13d1517h2_8daaf6152771_a87ad97598a9` |
+| Headers | tls.peet.ws and a local page over HTTP/1.1 (setting a cookie) | `"Microsoft Edge";v="153", …` brands; client hints on navigations; Cookie after Accept-Language |
+| Adjusted | headless `HeadlessChrome/153` User-Agent token, the capturing machine's Accept-Language | `Chrome/153`, generic Accept-Language |
