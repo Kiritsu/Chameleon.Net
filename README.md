@@ -42,6 +42,8 @@ A request goes through four layers. Each one is driven by the profile:
    - Chameleon.Net also fills in what browsers need and BouncyCastle lacks: X25519MLKEM768 post-quantum key shares,
      compressed certificates (brotli/zlib/zstd), ALPS, GREASE ECH, and TLS 1.3 session resumption with tickets
      reused like BoringSSL does.
+   - BouncyCastle runs in its non-blocking mode: Chameleon.Net reads and writes the socket with async I/O and hands
+     the bytes to it. A connection waiting for data, such as an idle WebSocket, holds no thread.
 3. **HTTP**: HTTP/1.1 and HTTP/2 (with HPACK) are implemented here, not taken from .NET, so the profile controls the
    HTTP/2 preface, stream priorities, pseudo-header order, first stream id, header order, casing and defaults per
    request kind. Connection pooling, redirects, cookies and decompression follow the emulated client (OkHttp's

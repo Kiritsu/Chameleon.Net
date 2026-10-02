@@ -33,6 +33,15 @@ internal sealed class ChameleonTlsClientProtocol : TlsClientProtocol
         _onTicket = onTicket;
     }
 
+    /// <summary>Non-blocking mode: no stream; <see cref="NonBlockingTlsStream"/> moves the bytes (OfferInput / ReadOutput).</summary>
+    public ChameleonTlsClientProtocol(TlsProfile profile, IClientHelloEncoder encoder, SessionTicket? resumption, Action<SessionTicket>? onTicket)
+    {
+        _profile = profile;
+        _encoder = encoder;
+        _resumption = resumption;
+        _onTicket = onTicket;
+    }
+
     public string? NegotiatedApplicationProtocol => Context.SecurityParameters.ApplicationProtocol?.GetUtf8Decoding();
 
     /// <summary>Whether the server accepted the offered ticket (no certificate was exchanged).</summary>

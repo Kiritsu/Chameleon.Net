@@ -85,18 +85,19 @@ public sealed class BouncyCastleTlsConnectionFactory : ITlsConnectionFactory
             Action<SessionTicket>? onTicket = ResumeSessions ? received => SessionCache.Add(host, port, profile, _certificateValidator, received) : null;
             // One set of GREASE values and one extension order per connection, so a retried ClientHello (after HelloRetryRequest) matches the first.
             var encoder = _encoder is ClientHelloEncoder shared ? shared.ForConnection() : _encoder;
-            protocol = new ChameleonTlsClientProtocol(stream, profile, encoder, ticket, onTicket);
+            protocol = new ChameleonTlsClientProtocol(profile, encoder, ticket, onTicket);
             var client = _clientFactory.Create(profile, host, new BcTlsCrypto(_random), _certificateValidator);
             if (client is ProfileTlsClient profileClient)
             {
                 profileClient.Resumption = ticket;
             }
 
-            // BouncyCastle's handshake is synchronous over the stream; disposing the stream is the only way to abort it.
+            // The handshake's socket reads honour the token; disposing the stream also covers transports that ignore it.
             await using var abort = cancellationToken.Register(static state => ((Stream)state!).Dispose(), stream).ConfigureAwait(false);
-            await Task.Run(() => protocol.Connect(client), cancellationToken).ConfigureAwait(false);
+            var tls = new NonBlockingTlsStream(protocol, stream);
+            await tls.HandshakeAsync(client, cancellationToken).ConfigureAwait(false);
 
-            return new TlsConnection(new DuplexTlsStream(protocol.Stream, stream), protocol.NegotiatedApplicationProtocol, protocol.SessionResumed);
+            return new TlsConnection(tls, protocol.NegotiatedApplicationProtocol, protocol.SessionResumed);
         }
         catch (Exception exception)
         {
