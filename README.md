@@ -1,5 +1,8 @@
 # Chameleon.Net
 
+[![NuGet](https://img.shields.io/nuget/v/Chameleon.Net.svg?label=Chameleon.Net)](https://www.nuget.org/packages/Chameleon.Net)
+[![NuGet](https://img.shields.io/nuget/v/Chameleon.Net.Extensions.Http.svg?label=Chameleon.Net.Extensions.Http)](https://www.nuget.org/packages/Chameleon.Net.Extensions.Http)
+
 An `HttpMessageHandler` and a WebSocket connector for .NET whose connections look like a specific real client
 on the wire: the TLS ClientHello, the HTTP/2 connection preface and frames, and the order, casing and defaults of
 the HTTP headers. Each client is described by a **profile**; the built-in ones were captured from the real clients and
@@ -71,9 +74,21 @@ ALPS, GREASE ECH, record size limit, TLS 1.3 session resumption, HTTP/2 SETTINGS
 pseudo-header order / first stream id, header order and defaults per request kind (navigation, `fetch()`, WebSocket),
 and OkHttp's connection pooling and header handling.
 
-## Usage
+## Installation
 
 Requires .NET 10.
+
+```bash
+dotnet add package Chameleon.Net
+```
+
+For `IHttpClientFactory` and dependency injection:
+
+```bash
+dotnet add package Chameleon.Net.Extensions.Http
+```
+
+## Usage
 
 ```csharp
 using Chameleon.Net;
