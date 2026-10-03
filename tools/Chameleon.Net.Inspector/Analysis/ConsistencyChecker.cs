@@ -48,8 +48,9 @@ internal sealed partial class ConsistencyChecker(
 
     private bool ClaimsKnownStack => ClaimsBrowser || _userAgent?.Family == ClientFamily.OkHttp;
 
-    /// <summary>The built-in profile to compare headers and HTTP/2 details with: the one the TLS matched if it's the claimed client's,
-    /// else one of the claimed family (Edge's for an Edge User-Agent).</summary>
+    /// <summary>The built-in profile to compare headers and HTTP/2 details with, among those of the claimed family: the one sending this
+    /// exact User-Agent first, then this sec-ch-ua (Brave's User-Agent is Chrome's, its brands aren't), then one the TLS matched, then
+    /// one named like the User-Agent's product (Edge's for an Edge User-Agent).</summary>
     private KnownClient? Reference()
     {
         if (_userAgent is null)
@@ -57,11 +58,22 @@ internal sealed partial class ConsistencyChecker(
             return null;
         }
 
-        var candidates = known.Clients.Where(c => c.Family == _userAgent.Family).ToList();
-        return tlsMatches.FirstOrDefault(candidates.Contains)
-            ?? candidates.FirstOrDefault(c => c.Profile.Identity.ClientFamily.Equals(_userAgent.Product, StringComparison.OrdinalIgnoreCase))
-            ?? candidates.FirstOrDefault(static c => c.Profile.Identity.ClientFamily != "Edge")
-            ?? candidates.FirstOrDefault();
+        var brands = request.Header("sec-ch-ua");
+        return known.Clients
+            .Where(c => c.Family == _userAgent.Family)
+            .Select((client, index) => (Client: client, Index: index, Score:
+                (Sends(client, "user-agent", _userAgent.Raw) ? 8 : 0)
+                + (brands is not null && Sends(client, "sec-ch-ua", brands) ? 4 : 0)
+                + (tlsMatches.Contains(client) ? 2 : 0)
+                + (client.Profile.Identity.ClientFamily.Equals(_userAgent.Product, StringComparison.OrdinalIgnoreCase) ? 1 : 0)))
+            .OrderByDescending(static c => c.Score)
+            .ThenBy(static c => c.Index)
+            .Select(static c => c.Client)
+            .FirstOrDefault();
+
+        static bool Sends(KnownClient client, string name, string value) =>
+            Enum.GetValues<RequestKind>().Any(kind => client.Profile.Headers.DefaultsFor(kind, http2: true)
+                .Any(h => h.Key.Equals(name, StringComparison.OrdinalIgnoreCase) && h.Value == value));
     }
 
     private void CheckUserAgent()
