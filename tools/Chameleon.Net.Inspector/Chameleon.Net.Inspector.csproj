@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <Description>Local server that reports what a CDN sees of a client: JA3/JA4, the Akamai HTTP/2 fingerprint, JA4H, header order, and inconsistencies between them and the User-Agent.</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\Chameleon.Net\Chameleon.Net.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Chameleon.Net.Tests" />
+    </ItemGroup>
+</Project>

@@ -168,6 +168,51 @@ services.AddChameleonWebSocketConnector(); // ChameleonWebSocketConnector and IW
 record; `AkamaiFingerprint.Compute(profile.Http2)` gives the Akamai HTTP/2 string. Services such as
 <https://tls.peet.ws/api/all> show what a server sees.
 
+### Inspector
+
+`tools/Chameleon.Net.Inspector` is a local server that shows what a CDN can see of any client (Chameleon.Net, a browser, an
+app on a phone, curl...) and where it contradicts its `User-Agent`:
+
+```bash
+dotnet run --project tools/Chameleon.Net.Inspector -- --port 8443
+```
+
+- **TLS**: JA3, JA4, JA4_r and every ClientHello field: cipher suites, extensions in order, groups and key shares,
+  GREASE positions, ALPS, certificate compression, ECH, PSK. It also tracks whether the extension order changes between
+  connections.
+- **HTTP/2**: the Akamai fingerprint read from the frames as they arrived, every frame before the first request,
+  HEADERS priority, first stream id and pseudo-header order.
+- **HTTP**: header names in order with their casing, and JA4H. WebSocket upgrades are included.
+- **Consistency**: which known client the TLS and HTTP/2 fingerprints match (the built-in profiles), and checks of the kind
+  bot management runs on every request:
+  - the TLS stack or HTTP/2 preface belongs to another client than the `User-Agent` claims;
+  - Chrome without its extension shuffle or post-quantum key share;
+  - `sec-ch-ua` contradicting the `User-Agent`;
+  - header order, casing or defaults that differ from the claimed client;
+  - SNI not matching the host.
+  
+  Findings are graded and summed up in a verdict. It's a heuristic: Cloudflare's and Akamai's real scoring also uses
+  traffic statistics and JavaScript challenges, and TCP/IP fingerprints need a packet capture.
+
+TLS and plain HTTP share the port: HTTP/2 over TLS through ALPN, HTTP/1.1, and h2c with prior knowledge. Every request
+gets its report as JSON; a WebSocket gets it as its first message. The console prints a summary, and `--log` appends each
+report to a JSON-lines file. The certificate is self-signed, so clients have to skip validation. One that rejects it
+still gets its ClientHello reported. `--listen any` lets a phone on the same network connect.
+
+**Exporting a profile.** The inspector can write what it saw of a client as a Chameleon.Net profile in C#, in the style of
+the built-in ones. Open `https://localhost:8443/capture` in a browser (accept the certificate first). The page makes the
+requests an export needs:
+- a navigation, a `fetch()` GET and POST, and a WebSocket over TLS;
+- a navigation and a `fetch()` over plain HTTP/1.1, for header casing and the headers sent only over HTTP/2.
+
+It ends on the exported profile, ready to copy or download. For other clients, such as an app on a phone, `/profiles`
+lists every client seen (address and `User-Agent`), and `/profile/{id}` exports one of them. What a client didn't show is
+listed in comments at the top of the file, for example no WebSocket or only one TLS connection (so Chrome's shuffle
+can't be detected). Review those before using the profile.
+
+The tests run every built-in profile through the inspector over loopback, for HTTP/2, HTTP/1.1 and WebSockets. They
+also export each one, compile the export, and check that it produces the same fingerprints as the original.
+
 ## Creating a profile
 
 [docs/creating-a-profile.md](docs/creating-a-profile.md) covers capturing a client (packet capture, tls.peet.ws, or a

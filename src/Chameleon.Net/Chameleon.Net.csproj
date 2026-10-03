@@ -17,5 +17,7 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="Chameleon.Net.Tests" />
+        <!-- HPACK for the inspector's HTTP/2 server. -->
+        <InternalsVisibleTo Include="Chameleon.Net.Inspector" />
     </ItemGroup>
 </Project>
