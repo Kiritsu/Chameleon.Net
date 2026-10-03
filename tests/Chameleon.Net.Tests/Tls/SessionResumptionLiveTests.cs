@@ -41,8 +41,8 @@ public sealed class SessionResumptionLiveTests
         var resumed = await GetAsync(factory, "tls.peet.ws", tls, cancellationToken, "/api/clean");
 
         Assert.True(resumed.Resumed);
-        // 17 extensions now (pre_shared_key added); the sorted-extension hash changes accordingly.
-        Assert.Contains("t13d1517h1_", resumed.Response, StringComparison.Ordinal);
+        // pre_shared_key added and, with http/1.1 alone, no ALPS: what Edge's resumed WebSocket connections show.
+        Assert.Contains("t13d1516h1_8daaf6152771_3bf25d69fb96", resumed.Response, StringComparison.Ordinal);
     }
 
     private static async Task<(bool Resumed, string Response)> GetAsync(
