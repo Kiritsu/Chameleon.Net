@@ -53,7 +53,8 @@ internal sealed class LoopbackHttpServer : IAsyncDisposable
             {
                 client = await _listener.AcceptTcpClientAsync();
             }
-            catch (Exception exception) when (exception is SocketException or ObjectDisposedException)
+            // Stopped while accepting (SocketException, ObjectDisposedException), or between two accepts (InvalidOperationException).
+            catch (Exception exception) when (exception is SocketException or ObjectDisposedException or InvalidOperationException)
             {
                 return;
             }
