@@ -69,6 +69,7 @@ jobs:
 
       - name: Capture
         if: steps.select.outputs.run == 'true'
+        timeout-minutes: 15
         shell: pwsh
         run: ./eng/profile-capture/Capture.ps1 -Browser ${{ matrix.browser }} -OutputDirectory artifacts/profile-capture
 

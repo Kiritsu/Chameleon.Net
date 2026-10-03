@@ -134,6 +134,8 @@ function Install-Browser {
         'macos' {
             if ($Browser -ne 'safari') {
                 $cask = @{ chrome = 'google-chrome'; edge = 'microsoft-edge'; firefox = 'firefox'; brave = 'brave-browser'; opera = 'opera' }[$Browser]
+                # GitHub's runners turn Homebrew's automatic update off: without this, the latest versions it knows are the image's.
+                Invoke-Native brew @('update', '--quiet')
                 # Chrome and Edge update themselves, and Homebrew leaves such casks alone unless told to be greedy.
                 & brew list --cask $cask *> $null
                 if ($LASTEXITCODE -eq 0) {
@@ -396,12 +398,18 @@ function Start-Browser([string] $BrowserPath, [string] $Url) {
         @('-profile', $profileDirectory, '-no-remote', '-new-instance', $Url)
     }
 
+    # The browser's output goes to files: its helper processes would otherwise inherit this script's output, and a CI step
+    # doesn't end while anything still holds that open.
+    $logs = @{
+        RedirectStandardOutput = Join-Path $OutputDirectory 'browser.log'
+        RedirectStandardError = Join-Path $OutputDirectory 'browser.err.log'
+    }
     if ($os -eq 'linux') {
         # A visible window on a virtual display: headless browsers announce themselves (HeadlessChrome) and differ in places.
-        return Start-Process xvfb-run -ArgumentList (Format-Arguments (@('-a', '--server-args=-screen 0 1280x1024x24', $executable) + $arguments)) -PassThru
+        return Start-Process xvfb-run -ArgumentList (Format-Arguments (@('-a', '--server-args=-screen 0 1280x1024x24', $executable) + $arguments)) -PassThru @logs
     }
 
-    return Start-Process $executable -ArgumentList (Format-Arguments $arguments) -PassThru
+    return Start-Process $executable -ArgumentList (Format-Arguments $arguments) -PassThru @logs
 }
 
 # By the profile directory on the command line rather than the started process: browsers relaunch themselves (Edge does on a
@@ -422,6 +430,11 @@ function Stop-Browser($Process) {
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction Ignore }
     } else {
         & pkill -f $profileDirectory 2>$null | Out-Null
+    }
+
+    if ($os -eq 'macos' -and $env:GITHUB_ACTIONS -eq 'true') {
+        # Some macOS helpers (GPU, network, crashpad) don't carry the profile directory: on a runner, everything from the app goes.
+        & pkill -f (Join-Path $browserPath 'Contents') 2>$null | Out-Null
     }
 }
 
