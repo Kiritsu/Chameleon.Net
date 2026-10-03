@@ -50,15 +50,16 @@ internal sealed class ReportBuilder(KnownClients known)
             return (matches[0].Family, $"matches {string.Join(", ", matches.Select(static m => m.Name))}");
         }
 
+        // Chrome sends ALPS only when it offers h2, so its WebSocket connections don't; GREASE ECH it always sends.
         var grease = hello.CipherSuites.Any(TlsNames.IsGrease);
-        if (grease && hello.AlpsCodepoint is not null)
+        if (grease && (hello.AlpsCodepoint is not null || hello.Ech is not null))
         {
-            return (ClientFamily.Chromium, "GREASE and ALPS: BoringSSL as Chrome configures it, but not a known version");
+            return (ClientFamily.Chromium, "GREASE with ALPS or GREASE ECH: BoringSSL as Chrome configures it, but not a known version");
         }
 
         if (grease)
         {
-            return (ClientFamily.Safari, "GREASE without ALPS: BoringSSL as Apple's network stack configures it");
+            return (ClientFamily.Safari, "GREASE without ALPS or ECH: BoringSSL as Apple's network stack configures it");
         }
 
         if (hello.HasExtension(34) && hello.HasExtension(28))

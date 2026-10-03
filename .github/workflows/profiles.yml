@@ -1,0 +1,115 @@
+name: Profiles
+
+# Installs the latest browsers, captures each one with the Chameleon.Net Inspector, and opens a pull request for every new
+# version, adding it as a built-in profile for a human to review and merge. See eng/profile-capture.
+on:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays, 05:00 UTC
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Only these captures, as browser:os separated by commas (e.g. chrome:windows,firefox:linux). Empty: all."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: profiles
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  capture:
+    name: Capture ${{ matrix.browser }} (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { browser: chrome, os: windows, runner: windows-latest }
+          - { browser: edge, os: windows, runner: windows-latest }
+          - { browser: firefox, os: windows, runner: windows-latest }
+          - { browser: brave, os: windows, runner: windows-latest }
+          - { browser: opera, os: windows, runner: windows-latest }
+          - { browser: chrome, os: macos, runner: macos-latest }
+          - { browser: edge, os: macos, runner: macos-latest }
+          - { browser: firefox, os: macos, runner: macos-latest }
+          - { browser: brave, os: macos, runner: macos-latest }
+          - { browser: opera, os: macos, runner: macos-latest }
+          - { browser: safari, os: macos, runner: macos-latest }
+          - { browser: chrome, os: linux, runner: ubuntu-latest }
+          - { browser: edge, os: linux, runner: ubuntu-latest }
+          - { browser: firefox, os: linux, runner: ubuntu-latest }
+          - { browser: brave, os: linux, runner: ubuntu-latest }
+          - { browser: opera, os: linux, runner: ubuntu-latest }
+    steps:
+      - name: Select
+        id: select
+        shell: pwsh
+        env:
+          ONLY: ${{ inputs.only }}
+          CAPTURE: ${{ matrix.browser }}:${{ matrix.os }}
+        run: |
+          $selected = [string]::IsNullOrWhiteSpace($env:ONLY) -or (($env:ONLY -split ',').Trim() -contains $env:CAPTURE)
+          "run=$($selected.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/checkout@v7
+        if: steps.select.outputs.run == 'true'
+
+      - uses: actions/setup-dotnet@v6
+        if: steps.select.outputs.run == 'true'
+        with:
+          global-json-file: global.json
+
+      - name: Capture
+        if: steps.select.outputs.run == 'true'
+        shell: pwsh
+        run: ./eng/profile-capture/Capture.ps1 -Browser ${{ matrix.browser }} -OutputDirectory artifacts/profile-capture
+
+      # Uploaded even when the capture failed: the inspector's log and reports show why.
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.select.outputs.run == 'true'
+        with:
+          name: profile-${{ matrix.browser }}-${{ matrix.os }}
+          path: artifacts/profile-capture
+          if-no-files-found: ignore
+
+  propose:
+    name: Propose new profiles
+    needs: capture
+    # Some captures failing shouldn't hold back the others.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # MinVer, and branching from the base
+          # A token other than GITHUB_TOKEN makes CI run on the pull requests; GITHUB_TOKEN works but doesn't trigger workflows.
+          token: ${{ secrets.PROFILE_BOT_TOKEN || github.token }}
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: profile-*
+          path: artifacts/profiles
+
+      - name: Propose
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.PROFILE_BOT_TOKEN || github.token }}
+        run: |
+          if (-not (Test-Path artifacts/profiles)) { Write-Host 'Nothing was captured.'; exit 0 }
+          ./eng/profile-capture/Propose.ps1 -ArtifactsDirectory artifacts/profiles -BaseBranch ${{ github.event.repository.default_branch }}

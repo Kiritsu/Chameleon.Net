@@ -61,12 +61,17 @@ the same fingerprints from Chameleon.Net as from the real client.
 
 ## Built-in profiles
 
-| Profile | Client | JA4 | Akamai HTTP/2 |
-|---|---|---|---|
-| `OkHttp4Android13` | OkHttp 4.12 on Android 13 (Conscrypt) | `t13d1513h2_…` | `4:16777216\|16711681\|0\|m,p,a,s` |
-| `Chromium152Windows` | Chromium 152 | `t13d1516h2_8daaf6152771_806a8c22fdea` | `1:65536;2:0;4:6291456;6:262144\|15663105\|0\|m,a,s,p` |
-| `Edge153Windows` | Microsoft Edge 153 | `t13d1516h2_8daaf6152771_806a8c22fdea` | `1:65536;2:0;4:6291456;6:262144\|15663105\|0\|m,a,s,p` |
-| `Firefox156Windows` | Firefox 156 | `t13d1517h2_8daaf6152771_3cbfd9057e0d` | `1:65536;2:0;4:131072;5:16384\|12517377\|0\|m,p,a,s` |
+| Latest | Profile | Client | JA4 | Akamai HTTP/2 |
+|---|---|---|---|---|
+| | `OkHttp4Android13` | OkHttp 4.12 on Android 13 (Conscrypt) | `t13d1513h2_…` | `4:16777216\|16711681\|0\|m,p,a,s` |
+| | `Chromium152Windows` | Chromium 152 | `t13d1516h2_8daaf6152771_806a8c22fdea` | `1:65536;2:0;4:6291456;6:262144\|15663105\|0\|m,a,s,p` |
+| `EdgeWindows` | `Edge153Windows` | Microsoft Edge 153 | `t13d1516h2_8daaf6152771_806a8c22fdea` | `1:65536;2:0;4:6291456;6:262144\|15663105\|0\|m,a,s,p` |
+| `FirefoxWindows` | `Firefox156Windows` | Firefox 156 | `t13d1517h2_8daaf6152771_3cbfd9057e0d` | `1:65536;2:0;4:131072;5:16384\|12517377\|0\|m,p,a,s` |
+
+These are the hand-made profiles. Newer versions of each browser, on Windows, macOS and Linux, arrive through the
+automated capture below, so `src/Chameleon.Net/Profiles/BuiltIn/` has the full list. A "latest" alias, such as
+`BuiltInProfiles.EdgeWindows` or `ChromeMacOS`, always points to the newest profile of that browser on that OS. A
+versioned name like `Edge153Windows` stays the same forever.
 
 What the profiles reproduce, depending on the client: cipher suite and extension order, GREASE (placement and
 per-connection values), Chrome's extension shuffle, X25519MLKEM768 post-quantum key shares, certificate compression,
@@ -232,6 +237,30 @@ also export each one, compile the export, and check that it produces the same fi
 
 [docs/creating-a-profile.md](docs/creating-a-profile.md) covers capturing a client (packet capture, tls.peet.ws, or a
 scripted headless browser), turning the capture into a profile, and verifying it.
+
+### Automated profile updates
+
+The `Profiles` workflow (`.github/workflows/profiles.yml`) runs every Monday:
+1. It installs the latest Chrome, Edge, Firefox, Brave and Opera on GitHub's Windows, macOS and Linux runners, and Safari
+   on macOS.
+2. It opens each one at the inspector's `/capture` page (`eng/profile-capture/Capture.ps1`). Browsers run with a visible
+   window, under a virtual display on Linux, because headless browsers identify themselves.
+3. For every version that isn't built in yet, it opens a pull request (`eng/profile-capture/Propose.ps1`). The pull
+   request adds the profile and points its "latest" alias at it, and the offline tests put it through the inspector
+   end to end.
+4. The pull request description lists the fingerprints, the inspector's findings, what the capture couldn't observe,
+   and the changes from the previous version. Nothing is merged without a review.
+
+It can also be started by hand from the Actions tab, for a subset of captures (`only: chrome:windows,firefox:linux`).
+
+Setup:
+- Allow GitHub Actions to create pull requests (Settings → Actions → General → Workflow permissions).
+- Optionally, add a `PROFILE_BOT_TOKEN` secret: a fine-grained token with contents and pull request write access.
+  Pull requests opened with the default `GITHUB_TOKEN` don't trigger CI. The workflow runs the build and tests itself
+  either way.
+
+Locally, `./eng/profile-capture/Capture.ps1 -Browser edge -SkipInstall -NoTrust` captures the installed Edge without
+changing the machine.
 
 ## Limitations
 

@@ -30,9 +30,12 @@ internal sealed class InspectorServer : IAsyncDisposable
     private readonly Lock _tasksLock = new();
     private int _connectionIds;
 
-    private InspectorServer(List<Socket> listeners, X509Certificate2 certificate, KnownClients known)
+    private readonly ExportSettings _export;
+
+    private InspectorServer(List<Socket> listeners, X509Certificate2 certificate, KnownClients known, ExportSettings export)
     {
         _listeners = listeners;
+        _export = export;
         _reports = new ReportBuilder(known);
         _tlsOptions = new SslServerAuthenticationOptions
         {
@@ -53,7 +56,8 @@ internal sealed class InspectorServer : IAsyncDisposable
     public int Port => EndPoints[0].Port;
 
     /// <param name="endpoints">Port 0 picks a free port, shared by every endpoint. <see cref="IPAddress.IPv6Any"/> also accepts IPv4.</param>
-    public static async Task<InspectorServer> StartAsync(IEnumerable<IPEndPoint> endpoints, X509Certificate2 certificate)
+    /// <param name="export">How <c>/profile</c> exports are written, and where they are also saved. Defaults: standalone C#, not saved.</param>
+    public static async Task<InspectorServer> StartAsync(IEnumerable<IPEndPoint> endpoints, X509Certificate2 certificate, ExportSettings? export = null)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         var known = await KnownClients.CreateAsync();
@@ -97,7 +101,7 @@ internal sealed class InspectorServer : IAsyncDisposable
             throw;
         }
 
-        var server = new InspectorServer(listeners, certificate, known);
+        var server = new InspectorServer(listeners, certificate, known, export ?? new ExportSettings());
         foreach (var listener in listeners)
         {
             server.Track(server.AcceptLoopAsync(listener));
@@ -203,8 +207,9 @@ internal sealed class InspectorServer : IAsyncDisposable
         catch (Exception exception) when (exception is AuthenticationException or IOException)
         {
             // Typically the client rejecting the self-signed certificate: the ClientHello is still worth reporting.
-            _clients.Record(connection, request: null);
-            Inspected?.Invoke(_reports.Build(connection, request: null, $"TLS handshake failed: {exception.InnerException?.Message ?? exception.Message}"));
+            var failed = _reports.Build(connection, request: null, $"TLS handshake failed: {exception.InnerException?.Message ?? exception.Message}");
+            _clients.Record(connection, request: null, failed);
+            Inspected?.Invoke(failed);
             return;
         }
 
@@ -286,8 +291,8 @@ internal sealed class InspectorServer : IAsyncDisposable
                 : Export(client);
         }
 
-        _clients.Record(connection, request);
         var report = _reports.Build(connection, request);
+        _clients.Record(connection, request, report);
         Inspected?.Invoke(report);
 
         if (!request.WebSocket && path == "/capture")
@@ -304,22 +309,83 @@ internal sealed class InspectorServer : IAsyncDisposable
         return new InspectorResponse(200, "application/json; charset=utf-8", JsonSerializer.SerializeToUtf8Bytes(report, ReportJson.Options));
     };
 
-    private static InspectorResponse Export(ClientSnapshot client)
+    private InspectorResponse Export(ClientSnapshot client)
     {
+        ExportedProfile export;
         try
         {
-            var export = ProfileExporter.Export(client);
-            return Text(200, ProfileSourceWriter.Write(export,
-            [
-                $"Exported by the Chameleon.Net Inspector on {DateTimeOffset.UtcNow:yyyy-MM-dd} from {client.Address}.",
-                $"User-Agent: {client.UserAgent ?? "(none)"}",
-            ]));
+            export = ProfileExporter.Export(client, _export.Client);
         }
         catch (InvalidOperationException exception)
         {
             return Text(409, exception.Message);
         }
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var source = _export.BuiltIn
+            ? ProfileSourceWriter.WriteBuiltIn(export, _export.Label ?? $"{export.Profile.Identity.ClientFamily} {export.Profile.Identity.Version} on {export.Profile.Identity.Platform}", today)
+            : ProfileSourceWriter.Write(export,
+            [
+                $"Exported by the Chameleon.Net Inspector on {today:yyyy-MM-dd} from {client.Address}.",
+                $"User-Agent: {client.UserAgent ?? "(none)"}",
+            ]);
+
+        if (_export.Directory is { } directory)
+        {
+            SaveExport(directory, client, export, source);
+        }
+
+        return Text(200, source);
+    }
+
+    /// <summary>Writes <c>{Property}.cs</c>, <c>Latest/{Alias}.cs</c> and <c>{Property}.json</c> (what a reviewer needs: fingerprints,
+    /// verdict, findings, notes). The JSON is written last: its presence means the export is complete.</summary>
+    private void SaveExport(string directory, ClientSnapshot client, ExportedProfile export, string source)
+    {
+        Directory.CreateDirectory(Path.Combine(directory, "Latest"));
+        File.WriteAllText(Path.Combine(directory, $"{export.PropertyName}.cs"), source);
+        if (_export.BuiltIn)
+        {
+            File.WriteAllText(Path.Combine(directory, "Latest", $"{export.AliasName}.cs"), ProfileSourceWriter.WriteAlias(export));
+        }
+
+        var reports = client.Observations.Select(static o => o.Report).ToList();
+        var metadata = new ExportMetadata(
+            export.Profile.Identity.Name,
+            export.PropertyName,
+            export.AliasName,
+            _export.Label,
+            client.UserAgent,
+            export.Fingerprints.Ja4,
+            export.Fingerprints.Ja3Hash,
+            export.Profile.Tls.Shuffle != Profiles.ExtensionShufflePolicy.None,
+            export.Fingerprints.Akamai,
+            reports.Count == 0 ? Verdict.Consistent : reports.Max(static r => r.Verdict),
+            [.. reports.SelectMany(static r => r.Findings).DistinctBy(static f => f.Id)],
+            export.Notes);
+        File.WriteAllText(Path.Combine(directory, $"{export.PropertyName}.json"), JsonSerializer.Serialize(metadata, ReportJson.Options));
     }
 
     private static InspectorResponse Text(int status, string text) => new(status, "text/plain; charset=utf-8", System.Text.Encoding.UTF8.GetBytes(text));
 }
+
+/// <param name="Directory">Where every export is also saved, for automation (eng/profile-capture).</param>
+/// <param name="BuiltIn">Write exports as members of Chameleon.Net's <c>BuiltInProfiles</c>, with a "latest" alias.</param>
+/// <param name="Client">Product name to use instead of the User-Agent's (Brave sends Chrome's).</param>
+/// <param name="Label">Provenance for the built-in profile's documentation, e.g. "Google Chrome 153.0.7012.4 on GitHub Actions windows-2025".</param>
+internal sealed record ExportSettings(string? Directory = null, bool BuiltIn = false, string? Client = null, string? Label = null);
+
+/// <summary>Saved next to each export, for the pull request that proposes it.</summary>
+internal sealed record ExportMetadata(
+    string Name,
+    string Property,
+    string Alias,
+    string? Label,
+    string? UserAgent,
+    string Ja4,
+    string Ja3Hash,
+    bool ExtensionShuffle,
+    string? Akamai,
+    Verdict Verdict,
+    IReadOnlyList<Finding> Findings,
+    IReadOnlyList<string> Notes);

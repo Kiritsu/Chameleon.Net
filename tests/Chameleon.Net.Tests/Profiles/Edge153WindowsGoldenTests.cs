@@ -25,6 +25,22 @@ public sealed class Edge153WindowsGoldenTests
         Assert.Equal("1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p", AkamaiFingerprint.Compute(Profile.Http2));
     }
 
+    /// <summary>Edge's WebSocket connections offer http/1.1 alone and send no ALPS. The capture (Edge 154, same TLS stack) was a resumed
+    /// connection: JA4 <c>t13d1516h1_8daaf6152771_3bf25d69fb96</c>, i.e. our fresh WebSocket hello plus pre_shared_key.</summary>
+    [Fact]
+    public async Task WebSocketClientHelloHasNoAlpsLikeTheCapture()
+    {
+        var tls = Profile.Tls.WithAlpn(Profile.WebSocket.Alpn!);
+        var fingerprint = TlsFingerprinter.Compute(ClientHelloParser.Parse(await ClientHelloCapture.CaptureAsync(tls, "tls.peet.ws")));
+
+        Assert.DoesNotContain(tls.Extensions, static e => e is ApplicationSettingsExtension);
+        Assert.StartsWith("t13d1515h1_8daaf6152771_", fingerprint.Ja4, StringComparison.Ordinal);
+        var parts = fingerprint.Ja4Raw.Split('_');
+        var resumedExtensions = string.Join(',', parts[2].Split(',').Append("0029").Order(StringComparer.Ordinal));
+        var resumedHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.ASCII.GetBytes($"{resumedExtensions}_{parts[3]}")))[..12];
+        Assert.Equal("3bf25d69fb96", resumedHash);
+    }
+
     [Fact]
     public async Task Http1NavigationSendsClientHints()
     {

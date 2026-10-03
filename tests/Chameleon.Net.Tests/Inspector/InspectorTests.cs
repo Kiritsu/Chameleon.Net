@@ -21,12 +21,10 @@ public sealed class InspectorTests
 
     private static readonly X509Certificate2 Certificate = TestCertificates.SelfSigned();
 
-    private static readonly Dictionary<string, ClientProfile> Profiles = new[]
-    {
-        BuiltInProfiles.OkHttp4Android13, BuiltInProfiles.Chromium152Windows, BuiltInProfiles.Edge153Windows, BuiltInProfiles.Firefox156Windows,
-    }.ToDictionary(static p => p.Identity.Name);
+    /// <summary>Every built-in profile, including the ones added by the automated capture.</summary>
+    private static readonly Dictionary<string, ClientProfile> Profiles = KnownClients.BuiltIn().ToDictionary(static p => p.Identity.Name);
 
-    /// <summary>JA4 of the real clients, as tls.peet.ws showed them.</summary>
+    /// <summary>JA4 of the real clients, as tls.peet.ws showed them (the hand-verified profiles).</summary>
     private static readonly Dictionary<string, string> BrowserJa4 = new()
     {
         ["chromium_152_windows"] = "t13d1516h2_8daaf6152771_806a8c22fdea",
@@ -36,16 +34,25 @@ public sealed class InspectorTests
 
     private static CancellationToken CancellationToken => TestContext.Current.CancellationToken;
 
-    public static TheoryData<string, RequestKind> ProfileRequests => new()
+    /// <summary>Navigations and fetch() for profiles that tell them apart (browsers), fetch() only for the others.</summary>
+    public static TheoryData<string, RequestKind> ProfileRequests
     {
-        { "okhttp4_android_13", RequestKind.Fetch },
-        { "chromium_152_windows", RequestKind.Navigate },
-        { "chromium_152_windows", RequestKind.Fetch },
-        { "edge_153_windows", RequestKind.Navigate },
-        { "edge_153_windows", RequestKind.Fetch },
-        { "firefox_156_windows", RequestKind.Navigate },
-        { "firefox_156_windows", RequestKind.Fetch },
-    };
+        get
+        {
+            var data = new TheoryData<string, RequestKind>();
+            foreach (var profile in Profiles.Values)
+            {
+                if (profile.Headers.Overrides.ContainsKey(RequestKind.Navigate) || profile.Headers.DefaultHeaderOverrides?.ContainsKey(RequestKind.Navigate) == true)
+                {
+                    data.Add(profile.Identity.Name, RequestKind.Navigate);
+                }
+
+                data.Add(profile.Identity.Name, RequestKind.Fetch);
+            }
+
+            return data;
+        }
+    }
 
     public static TheoryData<string> ProfileNames => new(Profiles.Keys);
 

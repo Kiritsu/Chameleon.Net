@@ -9,11 +9,17 @@ const string usage = """
     Chameleon.Net Inspector: shows what a CDN can see of a client (JA3/JA4, Akamai HTTP/2, JA4H, header order) and where it contradicts its User-Agent.
 
     Usage: Chameleon.Net.Inspector [--port 8443] [--listen loopback|any|<address>] [--cert <file.pfx> [--cert-password <password>]] [--log <file.jsonl>]
+                                   [--export-dir <dir>] [--export-format standalone|builtin] [--export-client <name>] [--export-label <text>]
 
       --port      TLS and plain HTTP on the same port (default 8443). HTTP/2 over TLS via ALPN, or h2c with prior knowledge.
       --listen    loopback (default), any (to test a phone on the same network), or one address.
       --cert      PFX to serve instead of a fresh self-signed certificate.
       --log       Append every report to this file as one JSON line.
+
+      --export-dir     Also save every /profile export there: <Profile>.cs, Latest/<Alias>.cs (builtin) and <Profile>.json.
+      --export-format  standalone (default): a class to paste into a project. builtin: a BuiltInProfiles member and its alias.
+      --export-client  Name the client instead of reading its User-Agent (Brave sends Chrome's).
+      --export-label   Where the capture came from, for the builtin profile's documentation.
 
     Every request is answered with its JSON report; a WebSocket upgrade gets it as the first text message.
 
@@ -26,6 +32,7 @@ var listen = "loopback";
 string? certificatePath = null;
 string? certificatePassword = null;
 string? logPath = null;
+var export = new ExportSettings();
 for (var i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -45,6 +52,18 @@ for (var i = 0; i < args.Length; i++)
         case "--log" when i + 1 < args.Length:
             logPath = args[++i];
             break;
+        case "--export-dir" when i + 1 < args.Length:
+            export = export with { Directory = args[++i] };
+            break;
+        case "--export-format" when i + 1 < args.Length && args[i + 1] is "standalone" or "builtin":
+            export = export with { BuiltIn = args[++i] == "builtin" };
+            break;
+        case "--export-client" when i + 1 < args.Length:
+            export = export with { Client = args[++i] };
+            break;
+        case "--export-label" when i + 1 < args.Length:
+            export = export with { Label = args[++i] };
+            break;
         default:
             Console.WriteLine(usage);
             return args[i] is "-h" or "--help" ? 0 : 1;
@@ -60,7 +79,7 @@ IPEndPoint[] endpoints = listen switch
 };
 
 using var certificate = certificatePath is null ? InspectorCertificate.CreateSelfSigned() : InspectorCertificate.Load(certificatePath, certificatePassword);
-await using var server = await InspectorServer.StartAsync(endpoints, certificate);
+await using var server = await InspectorServer.StartAsync(endpoints, certificate, export);
 
 var compact = new JsonSerializerOptions(ReportJson.Options) { WriteIndented = false };
 var output = new Lock();

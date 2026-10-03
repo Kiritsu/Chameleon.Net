@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using Chameleon.Net.Fingerprints;
 using Chameleon.Net.Inspector.Reports;
 using Chameleon.Net.Inspector.Tls;
@@ -17,7 +18,7 @@ internal sealed class KnownClients
 
     public static async Task<KnownClients> CreateAsync(IEnumerable<ClientProfile>? profiles = null)
     {
-        profiles ??= [BuiltInProfiles.OkHttp4Android13, BuiltInProfiles.Chromium152Windows, BuiltInProfiles.Edge153Windows, BuiltInProfiles.Firefox156Windows];
+        profiles ??= BuiltIn();
         var clients = new List<KnownClient>();
         foreach (var profile in profiles)
         {
@@ -28,9 +29,19 @@ internal sealed class KnownClients
         return new KnownClients(clients);
     }
 
+    /// <summary>Every profile in <see cref="BuiltInProfiles"/>, found by reflection so that new ones count without being listed;
+    /// "latest" aliases point to the same instances and are left out.</summary>
+    public static IReadOnlyList<ClientProfile> BuiltIn() =>
+    [
+        .. typeof(BuiltInProfiles).GetProperties(BindingFlags.Public | BindingFlags.Static)
+            .Where(static p => p.PropertyType == typeof(ClientProfile))
+            .Select(static p => (ClientProfile)p.GetValue(null)!)
+            .DistinctBy(static p => p.Identity.Name),
+    ];
+
     public static ClientFamily FamilyOf(ClientProfile profile) => profile.Identity.ClientFamily switch
     {
-        "Chromium" or "Edge" or "Chrome" => ClientFamily.Chromium,
+        "Chromium" or "Chrome" or "Edge" or "Brave" or "Opera" => ClientFamily.Chromium,
         "Firefox" => ClientFamily.Firefox,
         "Safari" => ClientFamily.Safari,
         "OkHttp" => ClientFamily.OkHttp,
@@ -38,11 +49,12 @@ internal sealed class KnownClients
     };
 
     /// <summary>JA4's sorted cipher and extension sets plus signature algorithms, leaving out what changes between connections of one client:
-    /// SNI and ALPN (per target), padding (sized to the hello), pre_shared_key and early_data (resumption).</summary>
+    /// SNI, ALPN and ALPS (per target and offer: Chrome's WebSocket connections offer http/1.1 alone, so no ALPS), padding (sized to
+    /// the hello), pre_shared_key and early_data (resumption).</summary>
     public static string TlsKey(ClientHelloDetails hello)
     {
         ushort[] variable = [ClientHelloDetails.ServerNameType, ClientHelloDetails.AlpnType, ClientHelloDetails.PaddingType,
-            ClientHelloDetails.PreSharedKeyType, ClientHelloDetails.EarlyDataType];
+            ClientHelloDetails.PreSharedKeyType, ClientHelloDetails.EarlyDataType, 17513, 17613];
         var ciphers = hello.CipherSuites.Where(static c => !TlsNames.IsGrease(c)).Order();
         var extensions = hello.ExtensionTypes.Where(e => !TlsNames.IsGrease(e) && !variable.Contains(e)).Order();
         var signatures = hello.SignatureAlgorithms.Where(static s => !TlsNames.IsGrease(s));

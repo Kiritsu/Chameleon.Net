@@ -1,4 +1,5 @@
 using System.Net;
+using Chameleon.Net.Inspector.Reports;
 
 namespace Chameleon.Net.Inspector.Server;
 
@@ -14,7 +15,7 @@ internal sealed class ClientRegistry
     private int _nextId;
 
     /// <param name="request">Null for a connection that ended before a request (only its ClientHello is known).</param>
-    public void Record(ConnectionCapture connection, RequestCapture? request)
+    public void Record(ConnectionCapture connection, RequestCapture? request, InspectionReport report)
     {
         var address = Normalize(connection.Remote.Address);
         var userAgent = request?.Header("user-agent");
@@ -37,7 +38,7 @@ internal sealed class ClientRegistry
                 client.Observations.RemoveAt(0);
             }
 
-            client.Observations.Add(new Observation(connection, request));
+            client.Observations.Add(new Observation(connection, request, report));
         }
     }
 
@@ -69,6 +70,6 @@ internal sealed class ClientRegistry
     }
 }
 
-internal sealed record Observation(ConnectionCapture Connection, RequestCapture? Request);
+internal sealed record Observation(ConnectionCapture Connection, RequestCapture? Request, InspectionReport Report);
 
 internal sealed record ClientSnapshot(int Id, IPAddress Address, string? UserAgent, IReadOnlyList<Observation> Observations);

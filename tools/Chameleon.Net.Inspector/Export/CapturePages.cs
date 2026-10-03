@@ -22,12 +22,15 @@ internal static class CapturePages
           step('fetch() GET');
           await fetch('/capture/post', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"capture":true}' });
           step('fetch() POST');
-          await new Promise(resolve => {
-            const socket = new WebSocket(`wss://${location.host}/capture/ws`);
-            socket.onmessage = () => { socket.close(); resolve(); };
-            socket.onerror = resolve;
-          });
-          step('WebSocket');
+          // Three WebSockets, each a new TLS connection: enough to see Chrome's extension shuffle and the GREASE ECH variants.
+          for (let i = 1; i <= 3; i++) {
+            await new Promise(resolve => {
+              const socket = new WebSocket(`wss://${location.host}/capture/ws`);
+              socket.onmessage = () => { socket.close(); resolve(); };
+              socket.onerror = resolve;
+            });
+            step(`WebSocket ${i}`);
+          }
           step('Navigation over plain HTTP/1.1…');
           location.href = `http://${location.host}/capture/plain`;
         })();

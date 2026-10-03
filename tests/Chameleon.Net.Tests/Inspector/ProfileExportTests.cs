@@ -4,6 +4,8 @@ using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Chameleon.Net.Http;
+using Chameleon.Net.Inspector.Analysis;
+using Chameleon.Net.Inspector.Export;
 using Chameleon.Net.Inspector.Reports;
 using Chameleon.Net.Inspector.Server;
 using Chameleon.Net.Profiles;
@@ -20,10 +22,7 @@ public sealed class ProfileExportTests
 {
     private static readonly X509Certificate2 Certificate = TestCertificates.SelfSigned();
 
-    private static readonly Dictionary<string, ClientProfile> Profiles = new[]
-    {
-        BuiltInProfiles.OkHttp4Android13, BuiltInProfiles.Chromium152Windows, BuiltInProfiles.Edge153Windows, BuiltInProfiles.Firefox156Windows,
-    }.ToDictionary(static p => p.Identity.Name);
+    private static readonly Dictionary<string, ClientProfile> Profiles = KnownClients.BuiltIn().ToDictionary(static p => p.Identity.Name);
 
     private static CancellationToken CancellationToken => TestContext.Current.CancellationToken;
 
@@ -56,6 +55,37 @@ public sealed class ProfileExportTests
             {
                 Assert.Contains(name, actual.Client.TlsMatches);
             }
+        }
+    }
+
+    /// <summary>What the automated capture proposes: a <c>BuiltInProfiles</c> member, its alias, and the metadata for the pull request.</summary>
+    [Fact]
+    public async Task BuiltInExportsCompileAsBuiltInProfilesWithTheirAlias()
+    {
+        var directory = Directory.CreateTempSubdirectory("chameleon-export-");
+        try
+        {
+            await using var server = await InspectorServer.StartAsync([new IPEndPoint(IPAddress.Loopback, 0), new IPEndPoint(IPAddress.IPv6Loopback, 0)], Certificate,
+                new ExportSettings(directory.FullName, BuiltIn: true, Client: "Brave", Label: "Brave on a test runner"));
+            using var client = Client(BuiltInProfiles.Chromium152Windows, new CookieContainer());
+            await SendAsync(client, HttpMethod.Get, $"https://localhost:{server.Port}/", RequestKind.Fetch);
+            await SendAsync(client, HttpMethod.Get, $"https://localhost:{server.Port}/profile", RequestKind.Fetch);
+
+            var source = await File.ReadAllTextAsync(Path.Combine(directory.FullName, "Brave152Windows.cs"), CancellationToken);
+            var alias = await File.ReadAllTextAsync(Path.Combine(directory.FullName, "Latest", "BraveWindows.cs"), CancellationToken);
+            var metadata = await File.ReadAllTextAsync(Path.Combine(directory.FullName, "Brave152Windows.json"), CancellationToken);
+
+            var type = CompileAssembly(source, alias).GetType("Chameleon.Net.Profiles.BuiltInProfiles")!;
+            var profile = (ClientProfile)type.GetProperty("Brave152Windows")!.GetValue(null)!;
+            Assert.Same(profile, type.GetProperty("BraveWindows")!.GetValue(null));
+            Assert.Equal("brave_152_windows", profile.Identity.Name);
+            Assert.Contains("/// <summary>Brave on a test runner.", source, StringComparison.Ordinal);
+            Assert.Contains("\"alias\": \"BraveWindows\"", metadata, StringComparison.Ordinal);
+            Assert.Contains("\"ja4\": \"t13d1516h2_8daaf6152771_806a8c22fdea\"", metadata, StringComparison.Ordinal);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
         }
     }
 
@@ -136,22 +166,28 @@ public sealed class ProfileExportTests
 
     private static ClientProfile Compile(string source)
     {
+        var property = CompileAssembly(source).GetType("ExportedProfiles")!.GetProperties(BindingFlags.Public | BindingFlags.Static).Single();
+        return (ClientProfile)property.GetValue(null)!;
+    }
+
+    /// <summary>Compiles like a project with implicit usings, as Chameleon.Net itself is built.</summary>
+    private static Assembly CompileAssembly(params string[] sources)
+    {
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator)
             .Select(static path => MetadataReference.CreateFromFile(path));
+        const string implicitUsings = "global using System; global using System.Collections.Generic; global using System.Linq;";
         var compilation = CSharpCompilation.Create(
             $"Exported{Guid.NewGuid():N}",
-            [CSharpSyntaxTree.ParseText(source)],
+            [.. sources.Append(implicitUsings).Select(static s => CSharpSyntaxTree.ParseText(s))],
             references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
 
         using var assembly = new MemoryStream();
         var result = compilation.Emit(assembly);
         Assert.True(result.Success, string.Join(Environment.NewLine,
-            result.Diagnostics.Where(static d => d.Severity == DiagnosticSeverity.Error).Select(static d => d.ToString()).Append(source)));
-
-        var property = Assembly.Load(assembly.ToArray()).GetType("ExportedProfiles")!.GetProperties(BindingFlags.Public | BindingFlags.Static).Single();
-        return (ClientProfile)property.GetValue(null)!;
+            result.Diagnostics.Where(static d => d.Severity == DiagnosticSeverity.Error).Select(static d => d.ToString()).Concat(sources)));
+        return Assembly.Load(assembly.ToArray());
     }
 
     /// <summary>Header names and values in order; the WebSocket key is random per handshake, and each run has its own port.</summary>

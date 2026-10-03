@@ -8,8 +8,12 @@ using Chameleon.Net.Profiles;
 
 namespace Chameleon.Net.Inspector.Export;
 
+/// <param name="AliasName">The per-browser, per-OS "latest" alias this profile becomes the target of, e.g. <c>ChromeWindows</c>.</param>
 /// <param name="Notes">What couldn't be observed and was guessed or left out, for the exported file's comments.</param>
-internal sealed record ExportedProfile(ClientProfile Profile, string PropertyName, IReadOnlyList<string> Notes);
+internal sealed record ExportedProfile(ClientProfile Profile, string PropertyName, string AliasName, IReadOnlyList<string> Notes, ExportFingerprints Fingerprints);
+
+/// <param name="Ja3Hash">Of the connection the TLS profile was taken from; it changes per connection when the extensions are shuffled.</param>
+internal sealed record ExportFingerprints(string Ja4, string Ja3Hash, string? Akamai);
 
 /// <summary>Builds a <see cref="ClientProfile"/> from everything one client showed the inspector. Each part comes from what was
 /// observed: the ClientHello of a fresh (non-resumed) connection, the HTTP/2 preface, and the headers of each request kind, told
@@ -30,8 +34,9 @@ internal static class ProfileExporter
         public bool Http2 => Request.Version == "2";
     }
 
+    /// <param name="product">Names the client instead of its User-Agent: Brave's is identical to Chrome's.</param>
     /// <exception cref="InvalidOperationException">Nothing from this client went over TLS.</exception>
-    public static ExportedProfile Export(ClientSnapshot client)
+    public static ExportedProfile Export(ClientSnapshot client, string? product = null)
     {
         var tlsConnections = client.Observations.Select(static o => o.Connection).Where(static c => c.Hello is not null).Distinct().ToList();
         if (tlsConnections.Count == 0)
@@ -46,13 +51,21 @@ internal static class ProfileExporter
             .ToList();
         notes.Add(Summary(tlsConnections.Count, requests));
 
+        var main = tlsConnections.FirstOrDefault(static c => c.Hello!.Alpn.Contains("h2") && c.Hello.PreSharedKey is null)
+            ?? tlsConnections.FirstOrDefault(static c => c.Hello!.PreSharedKey is null)
+            ?? tlsConnections[0];
         var spellings = Spellings(requests);
-        var tls = ExportTls(tlsConnections, notes);
-        var http2 = ExportHttp2(client.Observations, requests, notes);
+        var tls = ExportTls(main, tlsConnections, notes);
+        var (http2, akamai) = ExportHttp2(client.Observations, requests, notes);
         var headers = ExportHeaders(requests, spellings, userAgent, notes);
         var webSocket = ExportWebSocket(requests, tls, notes);
-        var identity = Identity(userAgent);
-        return new ExportedProfile(new ClientProfile(identity, tls, http2, headers, webSocket), PropertyName(identity.Name), notes);
+        var identity = Identity(userAgent, product);
+        return new ExportedProfile(
+            new ClientProfile(identity, tls, http2, headers, webSocket),
+            PascalCase($"{identity.ClientFamily}_{identity.Version}") + identity.Platform,
+            PascalCase(identity.ClientFamily) + identity.Platform,
+            notes,
+            new ExportFingerprints(main.Fingerprint!.Ja4, main.Fingerprint.Ja3Hash, akamai));
     }
 
     public static RequestKind KindOf(RequestCapture request) =>
@@ -60,11 +73,8 @@ internal static class ProfileExporter
         : string.Equals(request.Header("sec-fetch-mode"), "navigate", StringComparison.OrdinalIgnoreCase) ? RequestKind.Navigate
         : RequestKind.Fetch;
 
-    private static TlsProfile ExportTls(List<ConnectionCapture> connections, List<string> notes)
+    private static TlsProfile ExportTls(ConnectionCapture main, List<ConnectionCapture> connections, List<string> notes)
     {
-        var main = connections.FirstOrDefault(static c => c.Hello!.Alpn.Contains("h2") && c.Hello.PreSharedKey is null)
-            ?? connections.FirstOrDefault(static c => c.Hello!.PreSharedKey is null)
-            ?? connections[0];
         var hello = main.Hello!;
 
         var extensions = new List<TlsExtension>();
@@ -151,13 +161,13 @@ internal static class ProfileExporter
         }
     }
 
-    private static Http2Profile ExportHttp2(IReadOnlyList<Observation> observations, List<Seen> requests, List<string> notes)
+    private static (Http2Profile Profile, string? Akamai) ExportHttp2(IReadOnlyList<Observation> observations, List<Seen> requests, List<string> notes)
     {
         var capture = observations.Select(static o => o.Connection.Http2).FirstOrDefault(static c => c is not null);
         if (capture is null)
         {
             notes.Add("No HTTP/2 request was seen: the HTTP/2 part is a placeholder (empty preface).");
-            return new Http2Profile([], [PseudoHeader.Method, PseudoHeader.Authority, PseudoHeader.Scheme, PseudoHeader.Path], null);
+            return (new Http2Profile([], [PseudoHeader.Method, PseudoHeader.Authority, PseudoHeader.Scheme, PseudoHeader.Path], null), null);
         }
 
         var pseudo = capture.PseudoHeaders.Select(static p => p switch
@@ -187,7 +197,7 @@ internal static class ProfileExporter
             }
         }
 
-        return new Http2Profile(capture.Preface, pseudo, basePriority, overrides.Count == 0 ? null : overrides, (uint)capture.FirstStreamId);
+        return (new Http2Profile(capture.Preface, pseudo, basePriority, overrides.Count == 0 ? null : overrides, (uint)capture.FirstStreamId), capture.Akamai);
     }
 
     private static Http2HeadersPriority? Priority(PriorityReport? priority) =>
@@ -234,7 +244,7 @@ internal static class ProfileExporter
 
             compared = true;
             http2Only.AddRange(seen.Where(static r => r.Http2).SelectMany(static r => r.Request.Headers.Select(static h => h.Name))
-                .Where(name => !overHttp1.Contains(name) && !NotDefaults.Contains(name))
+                .Where(name => !overHttp1.Contains(name) && !NotDefaults.Contains(name) && !IsContextual(name))
                 .Select(name => Spell(name, spellings)));
         }
 
@@ -302,6 +312,10 @@ internal static class ProfileExporter
         return defaults;
     }
 
+    /// <summary>Headers that depend on how a request was started, not on the protocol: the capture's HTTP/1.1 navigation is made by
+    /// script, so it lacks Sec-Fetch-User, which a click sends over either protocol.</summary>
+    private static bool IsContextual(string name) => name.StartsWith("sec-fetch-", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>One order containing every sequence's names, each inserted after its predecessor in the sequence it came from.</summary>
     private static List<string> Merge(IEnumerable<List<string>> sequences)
     {
@@ -359,9 +373,9 @@ internal static class ProfileExporter
         };
     }
 
-    private static ProfileIdentity Identity(UserAgentReport? userAgent)
+    private static ProfileIdentity Identity(UserAgentReport? userAgent, string? productOverride)
     {
-        var product = userAgent?.Product.Replace(" (iOS)", "", StringComparison.Ordinal) ?? "Client";
+        var product = productOverride ?? userAgent?.Product.Replace(" (iOS)", "", StringComparison.Ordinal) ?? "Client";
         var version = userAgent?.MajorVersion?.ToString(CultureInfo.InvariantCulture) ?? "0";
         var platform = userAgent?.Platform switch
         {
@@ -381,10 +395,24 @@ internal static class ProfileExporter
         return new ProfileIdentity(name.ToString(), platform, product, version);
     }
 
-    private static string PropertyName(string name)
+    /// <summary>"python-requests_2" → "PythonRequests2": a C# identifier from words separated by anything but letters and digits.</summary>
+    private static string PascalCase(string words)
     {
-        var property = string.Concat(name.Split('_', StringSplitOptions.RemoveEmptyEntries).Select(static p => char.ToUpperInvariant(p[0]) + p[1..]));
-        return char.IsAsciiLetter(property[0]) ? property : "Client" + property;
+        var parts = new StringBuilder();
+        var upper = true;
+        foreach (var c in words)
+        {
+            if (!char.IsAsciiLetterOrDigit(c))
+            {
+                upper = true;
+                continue;
+            }
+
+            parts.Append(upper ? char.ToUpperInvariant(c) : c);
+            upper = false;
+        }
+
+        return parts.Length > 0 && char.IsAsciiLetter(parts[0]) ? parts.ToString() : "Client" + parts;
     }
 
     private static string Summary(int connections, List<Seen> requests)

@@ -4,14 +4,14 @@ using Chameleon.Net.Profiles;
 
 namespace Chameleon.Net.Inspector.Export;
 
-/// <summary>Writes an exported profile as C# in the style of the built-in profiles, ready to paste into a project.</summary>
+/// <summary>Writes an exported profile as C#: standalone, ready to paste into a project, or as a built-in profile of Chameleon.Net
+/// (a <c>BuiltInProfiles</c> member, written like the hand-made ones), with its "latest" alias.</summary>
 internal static class ProfileSourceWriter
 {
     private const int LineWidth = 140;
 
     public static string Write(ExportedProfile export, IEnumerable<string> header)
     {
-        var profile = export.Profile;
         var source = new StringBuilder();
         foreach (var line in header.Concat(export.Notes.Select(static n => $"- {n}")))
         {
@@ -23,16 +23,71 @@ internal static class ProfileSourceWriter
             .AppendLine("using Chameleon.Net.Profiles;")
             .AppendLine()
             .AppendLine("public static class ExportedProfiles")
+            .AppendLine("{");
+        WriteProperty(source, export);
+        source.AppendLine("}");
+        return source.ToString();
+    }
+
+    /// <param name="label">Where the capture came from, e.g. "Google Chrome 153.0.7012.4 on GitHub Actions windows-2025".</param>
+    public static string WriteBuiltIn(ExportedProfile export, string label, DateOnly captured)
+    {
+        var fingerprints = export.Fingerprints;
+        var shuffled = export.Profile.Tls.Shuffle != ExtensionShufflePolicy.None;
+        var source = new StringBuilder()
+            .AppendLine("namespace Chameleon.Net.Profiles;")
+            .AppendLine()
+            .AppendLine("public static partial class BuiltInProfiles")
             .AppendLine("{")
-            .AppendLine(CultureInfo.InvariantCulture, $"    public static ClientProfile {export.PropertyName} {{ get; }} = new(")
+            .AppendLine(CultureInfo.InvariantCulture, $"    /// <summary>{Xml(label)}.")
+            .AppendLine(CultureInfo.InvariantCulture, $"    /// <para>Captured {captured:yyyy-MM-dd} by the Chameleon.Net Inspector's automated capture (eng/profile-capture), then reviewed.</para>")
+            .AppendLine(CultureInfo.InvariantCulture, $"    /// <para>Expected JA4 <c>{fingerprints.Ja4}</c>{(shuffled ? " (JA3 changes per connection: extension shuffle)" : $", JA3 <c>{fingerprints.Ja3Hash}</c>")}{(fingerprints.Akamai is null ? "" : $"; Akamai <c>{fingerprints.Akamai}</c>")}.</para>");
+        if (export.Notes.Count > 0)
+        {
+            source.AppendLine("    /// <para>From the capture:</para>");
+            source.AppendLine("    /// <list type=\"bullet\">");
+            foreach (var note in export.Notes)
+            {
+                source.AppendLine(CultureInfo.InvariantCulture, $"    /// <item>{Xml(note)}</item>");
+            }
+
+            source.AppendLine("    /// </list>");
+        }
+
+        source.AppendLine("    /// </summary>");
+        WriteProperty(source, export);
+        return source.AppendLine("}").ToString();
+    }
+
+    /// <summary>The per-browser, per-OS alias, in a file of its own so that parallel profile updates never conflict.</summary>
+    public static string WriteAlias(ExportedProfile export)
+    {
+        var identity = export.Profile.Identity;
+        return new StringBuilder()
+            .AppendLine("namespace Chameleon.Net.Profiles;")
+            .AppendLine()
+            .AppendLine("public static partial class BuiltInProfiles")
+            .AppendLine("{")
+            .AppendLine(CultureInfo.InvariantCulture, $"    /// <summary>The latest built-in {Xml(identity.ClientFamily)} on {identity.Platform}: <see cref=\"{export.PropertyName}\"/>. Moves to each new version.</summary>")
+            .AppendLine(CultureInfo.InvariantCulture, $"    public static ClientProfile {export.AliasName} => {export.PropertyName};")
+            .AppendLine("}")
+            .ToString();
+    }
+
+    private static void WriteProperty(StringBuilder source, ExportedProfile export)
+    {
+        var profile = export.Profile;
+        source.AppendLine(CultureInfo.InvariantCulture, $"    public static ClientProfile {export.PropertyName} {{ get; }} = new(")
             .AppendLine(CultureInfo.InvariantCulture, $"        Identity: new ProfileIdentity({Literal(profile.Identity.Name)}, ClientPlatform.{profile.Identity.Platform}, {Literal(profile.Identity.ClientFamily)}, {Literal(profile.Identity.Version)}),");
         WriteTls(source, profile.Tls);
         WriteHttp2(source, profile.Http2);
         WriteHeaders(source, profile.Headers);
         WriteWebSocket(source, profile.WebSocket);
-        source.AppendLine("}");
-        return source.ToString();
     }
+
+    private static string Xml(string text) => text.Replace("&", "&amp;", StringComparison.Ordinal)
+        .Replace("<", "&lt;", StringComparison.Ordinal)
+        .Replace(">", "&gt;", StringComparison.Ordinal);
 
     private static void WriteTls(StringBuilder source, TlsProfile tls)
     {
