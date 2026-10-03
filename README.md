@@ -1,5 +1,6 @@
 # Chameleon.Net
 
+[![CI](https://github.com/Kiritsu/Chameleon.Net/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Kiritsu/Chameleon.Net/actions/workflows/ci.yml)
 [![NuGet](https://img.shields.io/nuget/v/Chameleon.Net.svg?label=Chameleon.Net)](https://www.nuget.org/packages/Chameleon.Net)
 [![NuGet](https://img.shields.io/nuget/v/Chameleon.Net.Extensions.Http.svg?label=Chameleon.Net.Extensions.Http)](https://www.nuget.org/packages/Chameleon.Net.Extensions.Http)
 

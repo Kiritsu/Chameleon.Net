@@ -52,19 +52,19 @@ $OutputDirectory = (Resolve-Path $OutputDirectory).Path
 # Product: the profile's client family, passed to the inspector because Brave's User-Agent is Chrome's.
 $browsers = @{
     chrome  = @{ Product = 'Chrome'; Name = 'Google Chrome'; Chromium = $true
-                 windows = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
+                 windows = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")
                  macos = '/Applications/Google Chrome.app'; linux = '/usr/bin/google-chrome-stable' }
     edge    = @{ Product = 'Edge'; Name = 'Microsoft Edge'; Chromium = $true
-                 windows = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+                 windows = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe")
                  macos = '/Applications/Microsoft Edge.app'; linux = '/usr/bin/microsoft-edge-stable' }
     firefox = @{ Product = 'Firefox'; Name = 'Mozilla Firefox'; Chromium = $false
                  windows = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"
                  macos = '/Applications/Firefox.app'; linux = '/usr/bin/firefox' }
     brave   = @{ Product = 'Brave'; Name = 'Brave'; Chromium = $true
-                 windows = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
+                 windows = @("$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe", "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe")
                  macos = '/Applications/Brave Browser.app'; linux = '/usr/bin/brave-browser' }
     opera   = @{ Product = 'Opera'; Name = 'Opera'; Chromium = $true
-                 windows = "$env:LOCALAPPDATA\Programs\Opera\opera.exe"
+                 windows = @("$env:LOCALAPPDATA\Programs\Opera\opera.exe", "$env:ProgramFiles\Opera\opera.exe")
                  macos = '/Applications/Opera.app'; linux = '/usr/bin/opera' }
     safari  = @{ Product = 'Safari'; Name = 'Safari'; Chromium = $false
                  macos = '/Applications/Safari.app' }
@@ -134,7 +134,13 @@ function Install-Browser {
         'macos' {
             if ($Browser -ne 'safari') {
                 $cask = @{ chrome = 'google-chrome'; edge = 'microsoft-edge'; firefox = 'firefox'; brave = 'brave-browser'; opera = 'opera' }[$Browser]
-                Invoke-Native brew @('install', '--cask', '--force', $cask)
+                # Chrome and Edge update themselves, and Homebrew leaves such casks alone unless told to be greedy.
+                & brew list --cask $cask *> $null
+                if ($LASTEXITCODE -eq 0) {
+                    Invoke-Native brew @('upgrade', '--cask', '--greedy', $cask)
+                } else {
+                    Invoke-Native brew @('install', '--cask', '--force', $cask)
+                }
             }
         }
         'linux' {
@@ -172,16 +178,17 @@ function Install-Browser {
 }
 
 function Get-BrowserPath {
-    $path = $spec[$os]
-    if ($os -eq 'windows' -and -not (Test-Path $path)) {
-        # Opera and Edge move between per-user and machine-wide locations.
-        $name = Split-Path $path -Leaf
-        $path = Get-ChildItem "$env:LOCALAPPDATA\Programs", $env:ProgramFiles, ${env:ProgramFiles(x86)} -Filter $name -Recurse -Depth 4 -ErrorAction Ignore |
+    $candidates = @($spec[$os])
+    $path = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $path -and $os -eq 'windows') {
+        # Installers move between per-user and machine-wide locations from one version to the next.
+        $name = Split-Path $candidates[0] -Leaf
+        $path = Get-ChildItem $env:LOCALAPPDATA, $env:ProgramFiles, ${env:ProgramFiles(x86)} -Filter $name -Recurse -Depth 4 -ErrorAction Ignore |
             Select-Object -First 1 -ExpandProperty FullName
     }
 
-    if (-not $path -or -not (Test-Path $path)) {
-        throw "$($spec.Name) isn't installed (looked for $($spec[$os]))."
+    if (-not $path) {
+        throw "$($spec.Name) isn't installed (looked for $($candidates -join ', '))."
     }
 
     return $path
@@ -242,6 +249,7 @@ function New-CaptureCertificates {
     return $files
 }
 
+# Returns whether the system trusts the authority now: macOS 26 runners refuse to change trust settings without a user.
 function Add-TrustedAuthority($Certificates) {
     $thumbprint = $Certificates.Thumbprint
     switch ($os) {
@@ -250,9 +258,13 @@ function Add-TrustedAuthority($Certificates) {
             $restore.Add({ Remove-Item "Cert:\LocalMachine\Root\$thumbprint" -ErrorAction Ignore }.GetNewClosure())
         }
         'macos' {
-            # Without this, adding trust settings needs an interactive authorization prompt.
-            Invoke-Native sudo @('security', 'authorizationdb', 'write', 'com.apple.trust-settings.admin', 'allow')
-            Invoke-Native sudo @('security', 'add-trusted-cert', '-d', '-r', 'trustRoot', '-k', '/Library/Keychains/System.keychain', $Certificates.AuthorityCer)
+            # Changing trust settings needs an interactive authorization; older runners let this rule be relaxed, macOS 26 doesn't.
+            & sudo security authorizationdb write com.apple.trust-settings.admin allow 2>&1 | Out-Host
+            & sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $Certificates.AuthorityCer 2>&1 | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                return $false
+            }
+
             $restore.Add({ & sudo security delete-certificate -Z $thumbprint /Library/Keychains/System.keychain | Out-Null }.GetNewClosure())
         }
         'linux' {
@@ -267,6 +279,8 @@ function Add-TrustedAuthority($Certificates) {
             $restore.Add({ & certutil -d $database -D -n chameleon-capture | Out-Null }.GetNewClosure())
         }
     }
+
+    return $true
 }
 
 # Writes a file (with sudo on Linux) and registers putting back what was there before.
@@ -377,7 +391,7 @@ function Start-Browser([string] $BrowserPath, [string] $Url) {
 
     # Only flags that skip first-run screens: nothing that changes what the browser sends.
     $arguments = if ($spec.Chromium) {
-        @("--user-data-dir=$profileDirectory", '--no-first-run', '--no-default-browser-check') + ($NoTrust ? @('--ignore-certificate-errors') : @()) + @($Url)
+        @("--user-data-dir=$profileDirectory", '--no-first-run', '--no-default-browser-check') + ($ignoreCertificateErrors ? @('--ignore-certificate-errors') : @()) + @($Url)
     } else {
         @('-profile', $profileDirectory, '-no-remote', '-new-instance', $Url)
     }
@@ -411,9 +425,13 @@ function Stop-Browser($Process) {
     }
 }
 
-if ($os -eq 'linux' -and -not ((Get-Command xvfb-run -ErrorAction Ignore) -and (Get-Command certutil -ErrorAction Ignore))) {
-    Invoke-Native sudo @('apt-get', 'update', '-q')
-    Invoke-Native sudo @('apt-get', 'install', '-y', '-q', 'xvfb', 'libnss3-tools')
+# A virtual display, NSS's certutil, and the GNOME settings schemas without which Opera aborts at startup.
+if ($os -eq 'linux') {
+    $missing = @('xvfb', 'libnss3-tools', 'gsettings-desktop-schemas') | Where-Object { & dpkg -s $_ *> $null; $LASTEXITCODE -ne 0 }
+    if ($missing) {
+        Invoke-Native sudo @('apt-get', 'update', '-q')
+        Invoke-Native sudo (@('apt-get', 'install', '-y', '-q') + $missing)
+    }
 }
 
 if (-not $SkipInstall) {
@@ -435,8 +453,16 @@ $inspector = $null
 $browserProcess = $null
 try {
     $certificates = New-CaptureCertificates
-    if (-not $NoTrust) {
-        Add-TrustedAuthority $certificates
+    $ignoreCertificateErrors = $NoTrust.IsPresent
+    if (-not $NoTrust -and -not (Add-TrustedAuthority $certificates)) {
+        # Firefox installs the authority from its own policy; Chromium-based browsers can ignore the error, which changes nothing
+        # in what they send. Safari has no such option.
+        if ($Browser -eq 'safari') {
+            throw "This runner refused to trust the capture's certificate authority, and Safari can't be told to ignore it."
+        }
+
+        Write-Warning 'This runner refused to trust the capture''s certificate authority; ignoring certificate errors instead.'
+        $ignoreCertificateErrors = $spec.Chromium
     }
 
     if ($Browser -eq 'firefox') {
