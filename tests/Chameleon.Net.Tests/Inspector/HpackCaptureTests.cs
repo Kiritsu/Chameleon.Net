@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Chameleon.Net.Http.Http2.Hpack;
 using Chameleon.Net.Inspector.Analysis;
 using Chameleon.Net.Inspector.Reports;
 using Chameleon.Net.Inspector.Server;
@@ -18,9 +19,9 @@ public sealed class HpackCaptureTests
         var requests = Load(capture);
 
         // The captures leave out the /favicon.ico request the browser sent on the same connection: its entries shift dynamic indices.
-        Assert.All(HpackReplay.Compare(requests, tls: true, rules, anyDynamicIndex: true), static differences => Assert.Empty(differences));
+        Assert.All(HpackReplayer.Compare(requests, tls: true, rules, anyDynamicIndex: true), static differences => Assert.Empty(differences));
         var other = rules == HpackIndexing.OkHttp ? HpackIndexing.Nghttp2 : HpackIndexing.OkHttp;
-        Assert.Contains(HpackReplay.Compare(requests, tls: true, other, anyDynamicIndex: true), static differences => differences.Count > 0);
+        Assert.Contains(HpackReplayer.Compare(requests, tls: true, other, anyDynamicIndex: true), static differences => differences.Count > 0);
     }
 
     [Theory]
@@ -35,10 +36,59 @@ public sealed class HpackCaptureTests
     }
 
     [Fact]
+    public void ReplayFollowsTheTableSizeTheClientChose()
+    {
+        var client = new Client(HpackIndexing.Nghttp2);
+        client.Encoder.SetMaxTableSize(0);
+        var replayer = new HpackReplayer(HpackIndexing.Nghttp2);
+
+        // Without a table, :authority is a literal on every request; a replay keeping 4096 bytes would expect it indexed the second time.
+        Assert.Empty(replayer.Next(Request("/a"), client.Send(Request("/a"))));
+        Assert.Empty(replayer.Next(Request("/b"), client.Send(Request("/b"))));
+    }
+
+    [Fact]
+    public void ReplayCountsBlocksThatAreNotRequests()
+    {
+        var client = new Client(HpackIndexing.OkHttp);
+        var replayer = new HpackReplayer(HpackIndexing.OkHttp);
+        var skipping = new HpackReplayer(HpackIndexing.OkHttp);
+        KeyValuePair<string, string>[] trailers = [new("x-checksum", "abc")];
+
+        var first = client.Send(Request("/a"));
+        Assert.Empty(replayer.Next(Request("/a"), first));
+        Assert.Empty(skipping.Next(Request("/a"), first));
+        Assert.Empty(replayer.Next(trailers, client.Send(trailers)));
+        var second = client.Send(Request("/b"));
+
+        // The trailer's entry shifts every later dynamic index: a replay that never saw it expects other indices.
+        Assert.Empty(replayer.Next(Request("/b"), second));
+        Assert.NotEmpty(skipping.Next(Request("/b"), second));
+    }
+
+    [Fact]
     public void BuiltInProfilesUseTheRulesTheirBrowserWasSeenWith()
     {
         Assert.Equal(new HpackProfile(SplitCookies: true), BuiltInProfiles.Edge154Windows.Http2.Hpack);
         Assert.Equal(new HpackProfile(SplitCookies: true, HpackIndexing.Nghttp2), BuiltInProfiles.Safari26MacOS.Http2.Hpack);
+    }
+
+    private static KeyValuePair<string, string>[] Request(string path) =>
+        [new(":method", "GET"), new(":authority", "example.com"), new(":scheme", "https"), new(":path", path), new("user-agent", "test")];
+
+    /// <summary>A client's encoder and, as on the inspector's side of the connection, one decoder reporting each block's representations.</summary>
+    private sealed class Client(HpackIndexing rules)
+    {
+        private readonly HpackDecoder _decoder = new(4096);
+
+        public HpackEncoder Encoder { get; } = new(rules);
+
+        public List<HpackFieldTrace> Send(KeyValuePair<string, string>[] fields)
+        {
+            var trace = new List<HpackFieldTrace>();
+            _decoder.Decode(Encoder.Encode(fields), trace);
+            return trace;
+        }
     }
 
     private static List<RequestCapture> Load(string capture) =>

@@ -21,6 +21,9 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
     private static ReadOnlySpan<byte> Preface => "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"u8;
 
     private readonly HpackDecoder _decoder = new(4096);
+
+    /// <summary>One per set of HPACK rules, fed every header block in wire order, trailers included, so each sees the client's table.</summary>
+    private readonly Dictionary<HpackIndexing, HpackReplayer> _replayers = Enum.GetValues<HpackIndexing>().ToDictionary(static rules => rules, static rules => new HpackReplayer(rules));
     private readonly HpackEncoder _encoder = new();
     private readonly List<FrameReport> _frames = [];
     private readonly List<string> _priorityFrames = [];
@@ -229,6 +232,7 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
         _continuation = null;
         var trace = new List<HpackFieldTrace>();
         var fields = _decoder.Decode(block.ToArray(), trace);
+        var differences = _replayers.ToDictionary(static r => r.Key, r => r.Value.Next(fields, trace));
         var pseudo = fields.Where(static f => f.Key.StartsWith(':')).Select(static f => f.Key).ToList();
 
         if (_streams.TryGetValue(streamId, out var existing))
@@ -264,8 +268,8 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
             WebSocket: false,
             streamId,
             priority,
-            HpackReports(fields, trace));
-        connection.AddHttp2Request(request);
+            HpackReports(fields, trace),
+            differences);
 
         var open = new OpenStream(request) { SendWindow = _peerInitialWindow };
         _streams[streamId] = open;

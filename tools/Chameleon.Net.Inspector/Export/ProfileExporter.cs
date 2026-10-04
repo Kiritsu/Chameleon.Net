@@ -221,22 +221,20 @@ internal static class ProfileExporter
             notes.Add("HTTP/2 cookie fields grouped several cookies, or requests disagreed: a profile can't reproduce that (not split).");
         }
 
-        var connections = observations.Select(static o => o.Connection).Where(static c => c.Http2 is not null).Distinct()
-            .Select(static c => (Requests: c.Http2RequestsThrough(), Tls: c.Hello is not null))
-            .Where(static c => c.Requests.Count > 0)
-            .ToList();
-        if (connections.Count == 0)
+        // Each HTTP/2 request carries, per set of rules, the fields they encode differently, replayed over its whole connection.
+        var replayed = observations.Select(static o => o.Request?.HpackDifferences).OfType<IReadOnlyDictionary<HpackIndexing, List<HpackDifference>>>().ToList();
+        if (replayed.Count == 0)
         {
             return null;
         }
 
         var indexing = Enum.GetValues<HpackIndexing>()
-            .Where(rules => connections.All(c => HpackReplay.Compare(c.Requests, c.Tls, rules).All(static d => d.Count == 0)))
+            .Where(rules => replayed.All(r => r[rules].Count == 0))
             .Cast<HpackIndexing?>()
             .FirstOrDefault();
         if (indexing is null)
         {
-            var difference = connections.SelectMany(static c => HpackReplay.Compare(c.Requests, c.Tls, HpackIndexing.OkHttp)).SelectMany(static d => d).First();
+            var difference = replayed.SelectMany(static r => r[HpackIndexing.OkHttp]).First();
             notes.Add($"The HPACK encoding follows neither OkHttp's nor nghttp2's rules (OkHttp's kept): '{difference.Name}' was {difference.Actual}, OkHttp's rules give {difference.Expected}.");
         }
 

@@ -187,9 +187,11 @@ internal sealed partial class ConsistencyChecker(
             return;
         }
 
-        if (request.Hpack is not null)
+        // The session replayed this connection's header blocks through each set of rules, up to and including this request's.
+        if (request.HpackDifferences?.GetValueOrDefault(profile.Hpack?.Indexing ?? HpackIndexing.OkHttp) is [var first, ..] differences)
         {
-            CheckHpack(reference);
+            Add(Severity.Medium, "http2", "hpack-representation",
+                $"{differences.Count} header field(s) encoded unlike {reference.Name}'s HPACK encoder; first '{first.Name}': {first.Actual}, expected {first.Expected}.");
         }
 
         var cookies = request.Headers.Where(static h => h.Name.Equals("cookie", StringComparison.OrdinalIgnoreCase)).ToList();
@@ -205,24 +207,6 @@ internal sealed partial class ConsistencyChecker(
 
         static string Describe(PriorityReport? priority) =>
             priority is null ? "none" : $"{(priority.Exclusive ? "exclusive " : "")}weight {priority.Weight} on stream {priority.DependsOn}";
-    }
-
-    /// <summary>Replays the connection's header blocks through the reference client's encoder: with the same fields in the same order,
-    /// it must produce the same representations, indexed or literal, which literal, Huffman or raw.</summary>
-    private void CheckHpack(KnownClient reference)
-    {
-        var requests = connection.Http2RequestsThrough(request);
-        if (requests.Count == 0)
-        {
-            return;
-        }
-
-        var differences = HpackReplay.Compare(requests, connection.Hello is not null, reference.Profile.Http2.Hpack?.Indexing ?? HpackIndexing.OkHttp)[^1];
-        if (differences is [var first, ..])
-        {
-            Add(Severity.Medium, "http2", "hpack-representation",
-                $"{differences.Count} header field(s) encoded unlike {reference.Name}'s HPACK encoder; first '{first.Name}': {first.Actual}, expected {first.Expected}.");
-        }
     }
 
     private void CheckHeaders(KnownClient reference)
