@@ -181,6 +181,19 @@ internal sealed partial class ConsistencyChecker(
             Add(Severity.Low, "http2", "first-stream-id", $"The first request used stream {http2.FirstStreamId}; {reference.Name} starts at {profile.FirstStreamId}.");
         }
 
+        // Likewise, flow control only against profiles where it was seen, and OkHttp's.
+        if (profile.FlowControl is not null || reference.Family == ClientFamily.OkHttp)
+        {
+            var rule = profile.FlowControl?.ConnectionUpdate ?? ConnectionWindowUpdate.HalfOfStreamWindow;
+            var threshold = FlowControlRules.Threshold(profile, rule);
+            var increments = FlowControlRules.ConnectionIncrements(connection);
+            if (!FlowControlRules.Matches(increments, threshold))
+            {
+                Add(Severity.Medium, "http2", "connection-window-update",
+                    $"Connection WINDOW_UPDATEs of {string.Join(", ", increments.Distinct().Take(3))}; {reference.Name} acknowledges the connection every {threshold} bytes.");
+            }
+        }
+
         // Only against HPACK behaviour seen on the real client: profiles with Hpack set, and OkHttp, whose encoder the defaults copy.
         if (profile.Hpack is null && reference.Family != ClientFamily.OkHttp)
         {

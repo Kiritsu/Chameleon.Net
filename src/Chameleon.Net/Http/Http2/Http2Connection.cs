@@ -30,6 +30,7 @@ internal sealed class Http2Connection : IHttpConnection
     private readonly Queue<TaskCompletionSource> _slotWaiters = new();
     private readonly int _localMaxFrameSize;
     private readonly int _windowUpdateThreshold;
+    private readonly int _connectionUpdateThreshold;
     private readonly ILogger _logger;
 
     private TaskCompletionSource _flowChanged = NewSignal();
@@ -65,8 +66,12 @@ internal sealed class Http2Connection : IHttpConnection
         _decoder = new HpackDecoder((int)Math.Min(LocalSetting(settings, Http2SettingId.HeaderTableSize, Http2Frame.DefaultHeaderTableSize), int.MaxValue));
         _encoder = new HpackEncoder(profile.Http2.Hpack?.Indexing ?? HpackIndexing.OkHttp);
 
-        // OkHttp acknowledges consumed bytes once half the initial window is used, per stream and per connection.
+        // Consumed bytes are acknowledged once half the window is used: per stream, half the initial window; per connection, half that
+        // too (OkHttp) or half the connection window (Chrome).
         _windowUpdateThreshold = Math.Max(1, localInitialWindow / 2);
+        _connectionUpdateThreshold = profile.Http2.FlowControl?.ConnectionUpdate == ConnectionWindowUpdate.HalfOfConnectionWindow
+            ? (int)Math.Clamp(profile.Http2.ConnectionWindow / 2, 1, int.MaxValue)
+            : _windowUpdateThreshold;
 
         // Streams named by preface PRIORITY frames (Firefox uses 3..13 as grouping nodes) are not available for requests.
         var highestPriorityStream = profile.Http2.Preface.OfType<Http2PriorityFrame>().Select(static frame => (int)frame.StreamId).DefaultIfEmpty(-1).Max();
@@ -186,7 +191,9 @@ internal sealed class Http2Connection : IHttpConnection
         if (read > 0)
         {
             CreditConnection(read);
-            if (!stream.RemoteEnded && Interlocked.Add(ref stream.Unacknowledged, read) >= _windowUpdateThreshold)
+
+            // Also once the server ended the stream, as long as it wasn't reset: OkHttp and Chrome acknowledge everything the app reads.
+            if (stream.Error is null && Interlocked.Add(ref stream.Unacknowledged, read) >= _windowUpdateThreshold)
             {
                 var increment = Interlocked.Exchange(ref stream.Unacknowledged, 0);
                 if (increment > 0)
@@ -422,7 +429,7 @@ internal sealed class Http2Connection : IHttpConnection
 
     private void CreditConnection(int bytes)
     {
-        if (bytes <= 0 || Interlocked.Add(ref _connectionUnacknowledged, bytes) < _windowUpdateThreshold)
+        if (bytes <= 0 || Interlocked.Add(ref _connectionUnacknowledged, bytes) < _connectionUpdateThreshold)
         {
             return;
         }

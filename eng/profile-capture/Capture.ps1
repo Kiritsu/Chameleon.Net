@@ -353,7 +353,8 @@ function Start-Inspector($Certificates, [string] $Label) {
     $arguments = @(
         $inspector, '--port', $Port, '--cert', $Certificates.Pfx, '--cert-password', $Certificates.Password,
         '--export-dir', $OutputDirectory, '--export-format', 'builtin', '--export-client', $spec.Product,
-        '--export-label', $Label, '--log', (Join-Path $OutputDirectory 'reports.jsonl'))
+        '--export-label', $Label, '--log', (Join-Path $OutputDirectory 'reports.jsonl'),
+        '--connection-log', (Join-Path $OutputDirectory 'connections.jsonl'))
     $process = Start-Process dotnet -ArgumentList (Format-Arguments $arguments) -PassThru `
         -RedirectStandardOutput (Join-Path $OutputDirectory 'inspector.log') -RedirectStandardError (Join-Path $OutputDirectory 'inspector.err.log')
 

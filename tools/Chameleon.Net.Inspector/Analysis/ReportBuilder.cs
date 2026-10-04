@@ -158,7 +158,7 @@ internal sealed class ReportBuilder(KnownClients known)
             var hash = Convert.ToHexStringLower(MD5.HashData(Encoding.ASCII.GetBytes(capture.Akamai)));
 #pragma warning restore CA5351
             http2 = new Http2Report(capture.Akamai, hash, capture.Frames, capture.FirstStreamId, request.StreamId, request.Priority,
-                string.Join(',', request.PseudoHeaders.Select(PseudoHeaderLetter)), request.Hpack);
+                string.Join(',', request.PseudoHeaders.Select(PseudoHeaderLetter)), request.Hpack, connection.TakeUnreportedHttp2Events());
         }
 
         return new HttpReport(request.Version, request.Method, request.Path, request.Authority, request.Headers, ja4h, ja4hRaw, request.WebSocket, http2);

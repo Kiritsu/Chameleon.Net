@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -18,6 +19,9 @@ namespace Chameleon.Net.Inspector.Server;
 /// and answers every request with its <see cref="InspectionReport"/> as JSON (as a text message for WebSockets).</summary>
 internal sealed class InspectorServer : IAsyncDisposable
 {
+    /// <summary>Largest /capture/bytes body: past every browser's initial connection window (Chrome's is 15 MB) twice over.</summary>
+    private const int MaxCaptureBytes = 64 << 20;
+
     private static ReadOnlySpan<byte> Http2Preface => "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"u8;
 
     private readonly List<Socket> _listeners;
@@ -50,6 +54,9 @@ internal sealed class InspectorServer : IAsyncDisposable
 
     /// <summary>Raised when a connection fails for a reason other than the client going away.</summary>
     public event Action<Exception>? ConnectionFailed;
+
+    /// <summary>An HTTP/2 connection ended.</summary>
+    public event Action<ConnectionLogReport>? ConnectionClosed;
 
     public IReadOnlyList<IPEndPoint> EndPoints => [.. _listeners.Select(static l => (IPEndPoint)l.LocalEndPoint!)];
 
@@ -186,6 +193,10 @@ internal sealed class InspectorServer : IAsyncDisposable
         finally
         {
             await stream.DisposeAsync();
+            if (connection.Http2 is { } http2)
+            {
+                ConnectionClosed?.Invoke(new ConnectionLogReport(connection.Id, connection.Remote.ToString(), connection.Alpn, http2.Akamai, connection.Http2Events()));
+            }
         }
     }
 
@@ -305,6 +316,13 @@ internal sealed class InspectorServer : IAsyncDisposable
         if (!request.WebSocket && path == "/capture/plain")
         {
             return new InspectorResponse(200, "text/html; charset=utf-8", System.Text.Encoding.UTF8.GetBytes(CapturePages.Plain));
+        }
+
+        // A body large enough to make the client acknowledge it: its WINDOW_UPDATEs show its flow control.
+        if (!request.WebSocket && path.StartsWith("/capture/bytes/", StringComparison.Ordinal)
+            && int.TryParse(path["/capture/bytes/".Length..], CultureInfo.InvariantCulture, out var size) && size is >= 0 and <= MaxCaptureBytes)
+        {
+            return new InspectorResponse(200, "application/octet-stream", new byte[size]);
         }
 
         return new InspectorResponse(200, "application/json; charset=utf-8", JsonSerializer.SerializeToUtf8Bytes(report, ReportJson.Options));

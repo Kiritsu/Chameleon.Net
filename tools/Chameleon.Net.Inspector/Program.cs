@@ -9,12 +9,13 @@ const string usage = """
     Chameleon.Net Inspector: shows what a CDN can see of a client (JA3/JA4, Akamai HTTP/2, JA4H, header order) and where it contradicts its User-Agent.
 
     Usage: Chameleon.Net.Inspector [--port 8443] [--listen loopback|any|<address>] [--cert <file.pfx> [--cert-password <password>]] [--log <file.jsonl>]
-                                   [--export-dir <dir>] [--export-format standalone|builtin] [--export-client <name>] [--export-label <text>]
+                                   [--connection-log <file.jsonl>] [--export-dir <dir>] [--export-format standalone|builtin] [--export-client <name>] [--export-label <text>]
 
       --port      TLS and plain HTTP on the same port (default 8443). HTTP/2 over TLS via ALPN, or h2c with prior knowledge.
       --listen    loopback (default), any (to test a phone on the same network), or one address.
       --cert      PFX to serve instead of a fresh self-signed certificate.
       --log       Append every report to this file as one JSON line.
+      --connection-log  Append every HTTP/2 connection, once closed, to this file: the frames after its first request (flow control).
 
       --export-dir     Also save every /profile export there: <Profile>.cs, Latest/<Alias>.cs (builtin) and <Profile>.json.
       --export-format  standalone (default): a class to paste into a project. builtin: a BuiltInProfiles member and its alias.
@@ -32,6 +33,7 @@ var listen = "loopback";
 string? certificatePath = null;
 string? certificatePassword = null;
 string? logPath = null;
+string? connectionLogPath = null;
 var export = new ExportSettings();
 for (var i = 0; i < args.Length; i++)
 {
@@ -51,6 +53,9 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--log" when i + 1 < args.Length:
             logPath = args[++i];
+            break;
+        case "--connection-log" when i + 1 < args.Length:
+            connectionLogPath = args[++i];
             break;
         case "--export-dir" when i + 1 < args.Length:
             export = export with { Directory = args[++i] };
@@ -91,6 +96,16 @@ server.Inspected += report =>
         if (logPath is not null)
         {
             File.AppendAllText(logPath, JsonSerializer.Serialize(report, compact) + Environment.NewLine);
+        }
+    }
+};
+server.ConnectionClosed += closed =>
+{
+    if (connectionLogPath is not null)
+    {
+        lock (output)
+        {
+            File.AppendAllText(connectionLogPath, JsonSerializer.Serialize(closed, compact) + Environment.NewLine);
         }
     }
 };

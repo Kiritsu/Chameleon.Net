@@ -62,7 +62,8 @@ public static partial class BuiltInProfiles
         {
             [RequestKind.Navigate] = new(0, 255, true),
         },
-        Hpack: new HpackProfile(SplitCookies: true));
+        Hpack: new HpackProfile(SplitCookies: true),
+        FlowControl: new Http2FlowControl(ConnectionWindowUpdate.HalfOfConnectionWindow));
 
     private static HeaderProfile ChromiumFamilyHeaders(string userAgent, string brands, bool navigationClientHints) => new(
         HeaderOrder:
