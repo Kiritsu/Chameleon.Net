@@ -1,0 +1,61 @@
+name: Feature request
+description: Suggest a new profile, protocol feature, API or Inspector improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. New browser versions on Windows, macOS and Linux are picked up every week by the
+        Profiles workflow, so there's no need to request those.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - New client profile (a client or platform not covered yet)
+        - TLS feature
+        - HTTP/2 or HTTP/1.1 feature
+        - WebSocket
+        - Public API
+        - Inspector
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what's missing or getting in the way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How you'd like it to work. For an API change, a code sample of the intended usage helps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: client
+    attributes:
+      label: Client details
+      description: |
+        For a new profile or a missing fingerprint feature: the client and version, its platform, and if you have one,
+        a capture of it (JA3/JA4, Akamai HTTP/2 string, header list, or the Inspector's exported profile).
+      render: text
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other approaches you've tried.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
