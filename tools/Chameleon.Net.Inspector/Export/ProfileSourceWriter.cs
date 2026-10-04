@@ -148,6 +148,11 @@ internal static class ProfileSourceWriter
             source.AppendLine(",").Append(CultureInfo.InvariantCulture, $"            Hpack: new HpackProfile(SplitCookies: {Bool(hpack.SplitCookies)}{indexing})");
         }
 
+        if (http2.FlowControl is { } flowControl)
+        {
+            source.AppendLine(",").Append(CultureInfo.InvariantCulture, $"            FlowControl: new Http2FlowControl(ConnectionWindowUpdate.{flowControl.ConnectionUpdate})");
+        }
+
         source.AppendLine("),");
     }
 

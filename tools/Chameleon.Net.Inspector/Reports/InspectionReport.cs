@@ -83,6 +83,7 @@ internal sealed record HeaderField(string Name, string Value);
 /// <param name="Frames">What the client sent before its first request, then that request's HEADERS.</param>
 /// <param name="Priority">This request's HEADERS priority, if the frame carried one.</param>
 /// <param name="Hpack">How each field of this request's header block was encoded, in wire order.</param>
+/// <param name="Events">Frames the client sent on the connection after its first request, since the previous report on it.</param>
 internal sealed record Http2Report(
     string Akamai,
     string AkamaiHash,
@@ -91,7 +92,18 @@ internal sealed record Http2Report(
     int StreamId,
     PriorityReport? Priority,
     string PseudoHeaderOrder,
-    IReadOnlyList<HpackFieldReport>? Hpack = null);
+    IReadOnlyList<HpackFieldReport>? Hpack = null,
+    IReadOnlyList<Http2EventReport>? Events = null);
+
+/// <summary>An HTTP/2 connection once closed: every frame it carried after its first request, whether or not a later report showed them.</summary>
+internal sealed record ConnectionLogReport(int Id, string Remote, string? Alpn, string Akamai, IReadOnlyList<Http2EventReport> Http2Events);
+
+/// <summary>A frame received after the connection's first request, or CLOSED when the client closed the connection.</summary>
+/// <param name="At">Milliseconds since the connection's preface.</param>
+/// <param name="Value">WINDOW_UPDATE: the increment. RST_STREAM and GOAWAY: the error code. PING: 1 for an ACK.</param>
+/// <param name="StreamDataSent">DATA payload bytes the inspector had sent on the frame's stream when it arrived (stream frames only).</param>
+/// <param name="ConnectionDataSent">DATA payload bytes the inspector had sent on the connection when it arrived.</param>
+internal sealed record Http2EventReport(double At, string Type, int StreamId, string? Flags, long? Value, long? StreamDataSent, long ConnectionDataSent);
 
 /// <param name="Name">Null for a dynamic table size update.</param>
 /// <param name="Index">Indexed fields: the entry (static up to 61, dynamic above). Literals: the name's index, null for a new name.

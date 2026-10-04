@@ -71,6 +71,8 @@ public sealed class ProfileExportTests
                 new ExportSettings(directory.FullName, BuiltIn: true, Client: "Brave", Label: "Brave on a test runner"));
             using var client = Client(BuiltInProfiles.Chromium152Windows, new CookieContainer());
             await SendAsync(client, HttpMethod.Get, $"https://localhost:{server.Port}/", RequestKind.Fetch);
+            // Past the connection window, as the capture page's downloads: shows when the connection is acknowledged.
+            await SendAsync(client, HttpMethod.Get, $"https://localhost:{server.Port}/capture/bytes/{16 << 20}", RequestKind.Fetch);
             await SendAsync(client, HttpMethod.Get, $"https://localhost:{server.Port}/profile", RequestKind.Fetch);
 
             var source = await File.ReadAllTextAsync(Path.Combine(directory.FullName, "Brave152Windows.cs"), CancellationToken);
@@ -82,6 +84,7 @@ public sealed class ProfileExportTests
             Assert.Same(profile, type.GetProperty("BraveWindows")!.GetValue(null));
             Assert.Equal("brave_152_windows", profile.Identity.Name);
             Assert.Contains("/// <summary>Brave on a test runner.", source, StringComparison.Ordinal);
+            Assert.Equal(new Http2FlowControl(ConnectionWindowUpdate.HalfOfConnectionWindow), profile.Http2.FlowControl);
             Assert.Contains("\"alias\": \"BraveWindows\"", metadata, StringComparison.Ordinal);
             Assert.Contains("\"ja4\": \"t13d1516h2_8daaf6152771_806a8c22fdea\"", metadata, StringComparison.Ordinal);
         }

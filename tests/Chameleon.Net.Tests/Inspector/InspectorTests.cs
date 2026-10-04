@@ -241,6 +241,42 @@ public sealed class InspectorTests
         AssertConsistent(report);
     }
 
+    /// <summary>Profiles whose connection flow control was captured, and OkHttp, whose rules are the default.</summary>
+    public static TheoryData<string> FlowControlProfileNames =>
+        new(Profiles.Values.Where(static p => p.Http2.FlowControl is not null || p.Identity.ClientFamily == "OkHttp").Select(static p => p.Identity.Name));
+
+    [Theory]
+    [MemberData(nameof(FlowControlProfileNames))]
+    public async Task BuiltInProfilesAcknowledgeTheConnectionLikeTheirClient(string name)
+    {
+        var profile = Profiles[name];
+        await using var server = await StartAsync();
+        using var client = Client(profile);
+
+        // 16 MiB: past Chrome's 7.5 MiB and OkHttp's 8 MiB connection thresholds twice.
+        var body = await client.GetByteArrayAsync(new Uri($"https://localhost:{server.Port}/capture/bytes/{16 << 20}"), CancellationToken);
+        var report = await GetReportAsync(client, new Uri($"https://localhost:{server.Port}/inspect"), RequestKind.Fetch);
+
+        Assert.Equal(16 << 20, body.Length);
+        var updates = report.Http!.Http2!.Events!.Where(static e => e is { Type: "WINDOW_UPDATE", StreamId: 0 }).ToList();
+        Assert.Equal(2, updates.Count);
+        Assert.DoesNotContain(report.Findings, static f => f.Id == "connection-window-update");
+        AssertConsistent(report);
+    }
+
+    [Fact]
+    public async Task ChromeUserAgentAcknowledgingTheConnectionLikeOkHttpIsFlagged()
+    {
+        var chrome = BuiltInProfiles.Chrome154Windows;
+        await using var server = await StartAsync();
+        using var client = Client(chrome with { Http2 = chrome.Http2 with { FlowControl = null } });
+
+        await client.GetByteArrayAsync(new Uri($"https://localhost:{server.Port}/capture/bytes/{16 << 20}"), CancellationToken);
+        var report = await GetReportAsync(client, new Uri($"https://localhost:{server.Port}/inspect"), RequestKind.Fetch);
+
+        Assert.Contains(report.Findings, static f => f.Id == "connection-window-update");
+    }
+
     [Fact]
     public async Task ChromeUserAgentWithJoinedCookiesIsFlagged()
     {
