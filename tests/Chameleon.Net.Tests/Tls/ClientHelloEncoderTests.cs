@@ -108,6 +108,21 @@ public sealed class ClientHelloEncoderTests
         }
     }
 
+    [Fact]
+    public async Task CipherSuitesAreExactlyTheProfilesWithoutRenegotiationInfo()
+    {
+        // BouncyCastle adds TLS_EMPTY_RENEGOTIATION_INFO_SCSV when renegotiation_info isn't offered; the profile decides, not BouncyCastle.
+        var profile = ChromeShaped with
+        {
+            Extensions = [.. ChromeShaped.Extensions.Where(static extension => extension is not RenegotiationInfoExtension)],
+            Grease = ChromeShaped.Grease & ~GreasePlacement.CipherSuites,
+        };
+
+        var hello = ClientHelloParser.Parse(await ClientHelloCapture.CaptureAsync(profile, "example.com"));
+
+        Assert.Equal(profile.CipherSuites, hello.CipherSuites);
+    }
+
     private static async Task<ParsedClientHello> CaptureAsync() =>
         ClientHelloParser.Parse(await ClientHelloCapture.CaptureAsync(ChromeShaped, "example.com"));
 

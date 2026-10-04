@@ -85,8 +85,10 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
 
         for (var redirects = 0; _allowAutoRedirect && redirects < _maxAutomaticRedirections; redirects++)
         {
-            if (RedirectTarget(request, response) is not { } target)
+            if (RedirectTarget(request, response) is not { } target
+                || (!BecomesGet(request.Method, response.StatusCode) && !HttpContentReplay.IsReplayable(request.Content)))
             {
+                // A streamed body was consumed by the first request and can't be sent again: hand back the redirect, as OkHttp does.
                 break;
             }
 
@@ -123,7 +125,7 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
             throw new NotSupportedException($"The '{uri.Scheme}' scheme is not supported.");
         }
 
-        var origin = new Origin(uri.Scheme, HttpUris.ConnectHost(uri), HttpUris.Port(uri));
+        var origin = OriginOf(uri);
         var cookieHeader = _cookies is not null && !request.Headers.Contains("Cookie") ? _cookies.GetCookieHeader(uri) : null;
         var http2PriorKnowledge = uri.Scheme == "http" && request.Version.Major >= 2 && request.VersionPolicy == HttpVersionPolicy.RequestVersionExact;
 
@@ -195,24 +197,36 @@ public sealed class ChameleonHttpMessageHandler : HttpMessageHandler
         return target.Scheme is "http" or "https" && !downgrade ? target : null;
     }
 
+    private static bool BecomesGet(HttpMethod method, HttpStatusCode status) => status switch
+    {
+        HttpStatusCode.MultipleChoices or HttpStatusCode.MovedPermanently or HttpStatusCode.Found => method == HttpMethod.Post,
+        HttpStatusCode.SeeOther => method != HttpMethod.Head,
+        _ => false,
+    };
+
     private static void PrepareRedirect(HttpRequestMessage request, HttpStatusCode status, Uri target)
     {
+        var crossOrigin = OriginOf(request.RequestUri!) != OriginOf(target);
         request.RequestUri = target;
 
-        var becomesGet = status switch
-        {
-            HttpStatusCode.MultipleChoices or HttpStatusCode.MovedPermanently or HttpStatusCode.Found => request.Method == HttpMethod.Post,
-            HttpStatusCode.SeeOther => request.Method != HttpMethod.Head,
-            _ => false,
-        };
-        if (becomesGet)
+        if (BecomesGet(request.Method, status))
         {
             request.Method = HttpMethod.Get;
             request.Content = null;
         }
 
-        request.Headers.Authorization = null;
+        if (crossOrigin)
+        {
+            // Credentials the caller set for one origin don't go to another (Fetch, curl). Cookies come back from the jar if it has
+            // any for the new origin; a caller-set Host would name the old one.
+            request.Headers.Authorization = null;
+            request.Headers.ProxyAuthorization = null;
+            request.Headers.Remove("Cookie");
+            request.Headers.Host = null;
+        }
     }
+
+    private static Origin OriginOf(Uri uri) => new(uri.Scheme, HttpUris.ConnectHost(uri), HttpUris.Port(uri));
 
     private static FixedProfileSelector SingleProfile(ClientProfile profile, ChameleonOptions? options)
     {

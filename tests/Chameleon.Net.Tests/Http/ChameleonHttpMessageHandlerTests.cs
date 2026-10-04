@@ -219,8 +219,86 @@ public sealed class ChameleonHttpMessageHandlerTests
         var followed = server.Requests[^1];
         Assert.Equal($"{expectedMethod} /end HTTP/1.1", followed.RequestLine);
         Assert.Equal(bodyKept ? "payload" : string.Empty, followed.BodyText);
-        Assert.Null(followed.Header("Authorization"));
+        Assert.Equal("Bearer secret", followed.Header("Authorization"));
         Assert.Equal("/end", response.RequestMessage!.RequestUri!.AbsolutePath);
+        Assert.Equal("done", await response.Content.ReadAsStringAsync(CancellationToken));
+    }
+
+    [Fact]
+    public async Task CrossOriginRedirectDropsTheCallersCredentials()
+    {
+        await using var target = new LoopbackHttpServer(static _ => Reply.Ok("done"));
+        await using var server = new LoopbackHttpServer(_ => Reply.Status("302 Found", string.Empty, $"Location: {target.Url("/end")}"));
+        using var client = Client();
+        using var request = new HttpRequestMessage(HttpMethod.Get, server.Url("/start"));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "secret");
+        request.Headers.ProxyAuthorization = new AuthenticationHeaderValue("Basic", "cHJveHk6c2VjcmV0");
+        request.Headers.Add("Cookie", "session=abc");
+        request.Headers.Host = "app.example";
+
+        using var response = await client.SendAsync(request, CancellationToken);
+
+        Assert.Equal("app.example", Assert.Single(server.Requests).Header("Host"));
+        var followed = Assert.Single(target.Requests);
+        Assert.Null(followed.Header("Authorization"));
+        Assert.Null(followed.Header("Proxy-Authorization"));
+        Assert.Null(followed.Header("Cookie"));
+        Assert.Equal($"127.0.0.1:{target.Port}", followed.Header("Host"));
+        Assert.Equal("done", await response.Content.ReadAsStringAsync(CancellationToken));
+    }
+
+    [Fact]
+    public async Task CrossOriginRedirectSendsTheJarsCookiesForTheNewOrigin()
+    {
+        var cookies = new CookieContainer();
+        await using var target = new LoopbackHttpServer(static _ => Reply.Ok("done"));
+        await using var server = new LoopbackHttpServer(_ => Reply.Status("302 Found", string.Empty, $"Location: {target.Url("/end")}"));
+        cookies.Add(target.Url("/"), new Cookie("jar", "1"));
+        using var client = Client(new ChameleonOptions { Cookies = cookies });
+        using var request = new HttpRequestMessage(HttpMethod.Get, server.Url("/start"));
+        request.Headers.Add("Cookie", "session=abc");
+
+        (await client.SendAsync(request, CancellationToken)).Dispose();
+
+        Assert.Equal("session=abc", Assert.Single(server.Requests).Header("Cookie"));
+        Assert.Equal("jar=1", Assert.Single(target.Requests).Header("Cookie"));
+    }
+
+    [Theory]
+    [InlineData(307)]
+    [InlineData(308)]
+    public async Task RedirectThatWouldResendAStreamedBodyIsReturned(int status)
+    {
+        await using var server = new LoopbackHttpServer(request => request.Path == "/start"
+            ? Reply.Status($"{status} Redirect", string.Empty, "Location: /end")
+            : Reply.Ok("done"));
+        using var client = Client();
+        using var request = new HttpRequestMessage(HttpMethod.Post, server.Url("/start"))
+        {
+            Content = new StreamContent(new MemoryStream("payload"u8.ToArray())),
+        };
+
+        using var response = await client.SendAsync(request, CancellationToken);
+
+        Assert.Equal(status, (int)response.StatusCode);
+        Assert.Equal("payload", Assert.Single(server.Requests).BodyText);
+    }
+
+    [Fact]
+    public async Task RedirectToGetDropsAStreamedBodyAndFollows()
+    {
+        await using var server = new LoopbackHttpServer(static request => request.Path == "/start"
+            ? Reply.Status("303 See Other", string.Empty, "Location: /end")
+            : Reply.Ok("done"));
+        using var client = Client();
+        using var request = new HttpRequestMessage(HttpMethod.Post, server.Url("/start"))
+        {
+            Content = new StreamContent(new MemoryStream("payload"u8.ToArray())),
+        };
+
+        using var response = await client.SendAsync(request, CancellationToken);
+
+        Assert.Equal("GET /end HTTP/1.1", server.Requests[^1].RequestLine);
         Assert.Equal("done", await response.Content.ReadAsStringAsync(CancellationToken));
     }
 

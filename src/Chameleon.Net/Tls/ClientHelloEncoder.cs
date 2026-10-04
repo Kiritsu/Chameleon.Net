@@ -40,8 +40,12 @@ public sealed class ClientHelloEncoder : IClientHelloEncoder
         TlsUtilities.WriteVersion(hello.Version, body);
         body.Write(hello.Random);
         TlsUtilities.WriteOpaque8(hello.SessionID, body);
+        // BouncyCastle appends TLS_EMPTY_RENEGOTIATION_INFO_SCSV when the hello has no renegotiation_info; only the profile adds suites.
+        int[] cipherSuites = profile.CipherSuites.Contains((ushort)CipherSuite.TLS_EMPTY_RENEGOTIATION_INFO_SCSV)
+            ? hello.CipherSuites
+            : [.. hello.CipherSuites.Where(static suite => suite != CipherSuite.TLS_EMPTY_RENEGOTIATION_INFO_SCSV)];
         TlsUtilities.WriteUint16ArrayWithUint16Length(
-            profile.Grease.HasFlag(GreasePlacement.CipherSuites) ? [choices.CipherSuite, .. hello.CipherSuites] : hello.CipherSuites, body);
+            profile.Grease.HasFlag(GreasePlacement.CipherSuites) ? [choices.CipherSuite, .. cipherSuites] : cipherSuites, body);
         TlsUtilities.WriteOpaque8([0], body);
 
         var encoded = new List<(int Type, byte[] Body)>(extensions.Count);
