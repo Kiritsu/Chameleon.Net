@@ -20,7 +20,7 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
 
     private static ReadOnlySpan<byte> Preface => "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"u8;
 
-    private readonly HpackDecoder _decoder = new(4096);
+    private readonly HpackDecoder _decoder = new(HpackReplayer.TableSize);
 
     /// <summary>One per set of HPACK rules, fed every header block in wire order, trailers included, so each sees the client's table.</summary>
     private readonly Dictionary<HpackIndexing, HpackReplayer> _replayers = Enum.GetValues<HpackIndexing>().ToDictionary(static rules => rules, static rules => new HpackReplayer(rules));

@@ -47,6 +47,23 @@ public sealed class HpackCaptureTests
         Assert.Empty(replayer.Next(Request("/b"), client.Send(Request("/b"))));
     }
 
+    [Theory]
+    [InlineData(HpackIndexing.OkHttp)]
+    [InlineData(HpackIndexing.Nghttp2)]
+    public void ReplayEvictsLikeTheClientWhenTheTableOverflows(HpackIndexing rules)
+    {
+        var client = new Client(rules);
+        var replayer = new HpackReplayer(rules);
+
+        // 40 distinct 300-byte values: ten times the table, so entries are evicted throughout, and the first ones are sent again
+        // once they've left the table.
+        for (var request = 0; request < 50; request++)
+        {
+            KeyValuePair<string, string>[] fields = [.. Request("/"), new("x-token", new string((char)('a' + request % 40 % 26), 300 + request % 40))];
+            Assert.Empty(replayer.Next(fields, client.Send(fields)));
+        }
+    }
+
     [Fact]
     public void ReplayCountsBlocksThatAreNotRequests()
     {

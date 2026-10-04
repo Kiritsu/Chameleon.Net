@@ -17,8 +17,14 @@ internal sealed record HpackDifference(string Name, string Actual, string Expect
 /// without some that preceded them on the connection (such as an unreported /favicon.ico), whose entries shift the indices.</param>
 internal sealed class HpackReplayer(HpackIndexing rules, bool anyDynamicIndex = false)
 {
+    /// <summary>The inspector doesn't send SETTINGS_HEADER_TABLE_SIZE, so clients encode against the default table, and size updates
+    /// can't exceed it.</summary>
+    public const int TableSize = 4096;
+
     private readonly HpackEncoder _encoder = new(rules);
-    private readonly HpackDecoder _decoder = new(int.MaxValue);
+
+    // Sized like the encoder's table, so it evicts as the encoder does instead of keeping every field the connection sent.
+    private readonly HpackDecoder _decoder = new(TableSize);
 
     /// <param name="fields">The block's fields, in wire order.</param>
     /// <param name="observed">How the client represented them, size updates included.</param>
