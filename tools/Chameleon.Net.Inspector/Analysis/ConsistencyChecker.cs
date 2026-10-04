@@ -181,6 +181,12 @@ internal sealed partial class ConsistencyChecker(
             Add(Severity.Low, "http2", "first-stream-id", $"The first request used stream {http2.FirstStreamId}; {reference.Name} starts at {profile.FirstStreamId}.");
         }
 
+        // Only against HPACK behaviour seen on the real client: profiles with Hpack set, and OkHttp, whose encoder the defaults copy.
+        if (profile.Hpack is null && reference.Family != ClientFamily.OkHttp)
+        {
+            return;
+        }
+
         if (request.Hpack is not null)
         {
             CheckHpack(reference);
@@ -188,7 +194,7 @@ internal sealed partial class ConsistencyChecker(
 
         var cookies = request.Headers.Where(static h => h.Name.Equals("cookie", StringComparison.OrdinalIgnoreCase)).ToList();
         var splits = profile.Hpack?.SplitCookies == true;
-        if (splits && cookies is [{ } joined] && joined.Value.Contains(';', StringComparison.Ordinal))
+        if (splits && cookies.Any(static c => c.Value.Contains(';', StringComparison.Ordinal)))
         {
             Add(Severity.Medium, "http2", "cookies-joined", $"Several cookies in one cookie field; {reference.Name} sends each cookie as its own field.");
         }

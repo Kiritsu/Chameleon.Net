@@ -210,6 +210,8 @@ the first frames the client sends after the connection preface:
   Chrome) or `Nghttp2` (Safari: cookies under 20 bytes never indexed, `content-length` not indexed).
   The Inspector reports each field's HPACK representation, replays the connection's header blocks
   through the reference profile's rules to flag a difference, and picks the rules when exporting.
+  It judges cookies and HPACK only against profiles with `Hpack` set (and OkHttp's), so set it,
+  even to `new HpackProfile()`, once you have checked the client's header blocks.
 
 tls.peet.ws (§2) shows all of this without key logging.
 

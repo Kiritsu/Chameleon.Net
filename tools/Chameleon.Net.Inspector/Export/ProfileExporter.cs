@@ -205,18 +205,31 @@ internal static class ProfileExporter
     /// indexing rules are the ones that, replayed over every HTTP/2 connection, reproduce each field's representation.</summary>
     private static HpackProfile? ExportHpack(IReadOnlyList<Observation> observations, List<Seen> requests, List<string> notes)
     {
+        // Requests whose cookies show the client's choice: two cookies or more, in one field or several.
         var cookieFields = requests.Where(static r => r.Http2)
-            .Select(static r => r.Request.Headers.Where(static h => h.Name.Equals("cookie", StringComparison.OrdinalIgnoreCase)).ToList())
-            .Where(static fields => fields.Count > 1 || (fields.Count == 1 && fields[0].Value.Contains(';', StringComparison.Ordinal)))
+            .Select(static r => r.Request.Headers.Where(static h => h.Name.Equals("cookie", StringComparison.OrdinalIgnoreCase)).Select(static h => h.Value).ToList())
+            .Where(static fields => fields.Count > 1 || (fields.Count == 1 && fields[0].Contains(';', StringComparison.Ordinal)))
             .ToList();
+        var oneCookiePerField = cookieFields.Count > 0 && cookieFields.All(static fields => fields.Count > 1 && !fields.Any(static f => f.Contains(';', StringComparison.Ordinal)));
+        var joined = cookieFields.All(static fields => fields.Count == 1);
         if (cookieFields.Count == 0)
         {
             notes.Add("No HTTP/2 request carried two cookies: whether the client splits the Cookie header is unknown (not split).");
         }
+        else if (!oneCookiePerField && !joined)
+        {
+            notes.Add("HTTP/2 cookie fields grouped several cookies, or requests disagreed: a profile can't reproduce that (not split).");
+        }
 
         var connections = observations.Select(static o => o.Connection).Where(static c => c.Http2 is not null).Distinct()
             .Select(static c => (Requests: c.Http2RequestsThrough(), Tls: c.Hello is not null))
+            .Where(static c => c.Requests.Count > 0)
             .ToList();
+        if (connections.Count == 0)
+        {
+            return null;
+        }
+
         var indexing = Enum.GetValues<HpackIndexing>()
             .Where(rules => connections.All(c => HpackReplay.Compare(c.Requests, c.Tls, rules).All(static d => d.Count == 0)))
             .Cast<HpackIndexing?>()
@@ -227,10 +240,8 @@ internal static class ProfileExporter
             notes.Add($"The HPACK encoding follows neither OkHttp's nor nghttp2's rules (OkHttp's kept): '{difference.Name}' was {difference.Actual}, OkHttp's rules give {difference.Expected}.");
         }
 
-        var splitCookies = cookieFields.Any(static fields => fields.Count > 1);
-        return splitCookies || indexing is { } rules && rules != HpackIndexing.OkHttp
-            ? new HpackProfile(splitCookies, indexing ?? HpackIndexing.OkHttp)
-            : null;
+        // Written even when it says what the defaults say: a profile with Hpack set was checked against its client's header blocks.
+        return new HpackProfile(oneCookiePerField, indexing ?? HpackIndexing.OkHttp);
     }
 
     private static Http2HeadersPriority? Priority(PriorityReport? priority) =>

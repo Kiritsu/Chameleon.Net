@@ -1,13 +1,31 @@
 using System.Net;
+using Chameleon.Net.Fingerprints;
 using Chameleon.Net.Inspector.Analysis;
 using Chameleon.Net.Inspector.Reports;
 using Chameleon.Net.Inspector.Server;
+using Chameleon.Net.Profiles;
 
 namespace Chameleon.Net.Tests.Inspector;
 
 public sealed class InspectorAnalysisTests
 {
     private const string FirefoxUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0";
+
+    /// <summary>An HTTP/2 request from a client with the profile's preface and User-Agent, carrying these cookie fields.</summary>
+    private static async Task<InspectionReport> BuildHttp2Async(ClientProfile profile, string[] cookies)
+    {
+        var builder = new ReportBuilder(await KnownClients.CreateAsync());
+        var connection = new ConnectionCapture(1, new IPEndPoint(IPAddress.Loopback, 50000))
+        {
+            Http2 = new Http2ConnectionCapture(AkamaiFingerprint.Compute(profile.Http2), [], (int)profile.Http2.FirstStreamId, profile.Http2.Preface,
+                [":method", ":authority", ":scheme", ":path"]),
+        };
+        var request = new RequestCapture("2", "GET", "/", "example.com",
+            [new HeaderField("user-agent", profile.Headers.DefaultHeaders["User-Agent"]), .. cookies.Select(static c => new HeaderField("cookie", c))],
+            [":method", ":authority", ":scheme", ":path"], WebSocket: false, StreamId: (int)profile.Http2.FirstStreamId);
+
+        return builder.Build(connection, request);
+    }
 
     [Theory]
     [InlineData("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/140.0 Mobile/15E148 Safari/605.1.15",
@@ -51,6 +69,24 @@ public sealed class InspectorAnalysisTests
         Assert.Contains(report.Findings, static f => f.Id == "header-casing" && f.Message.Contains("'host' (expected 'Host')", StringComparison.Ordinal));
         Assert.Contains(report.Findings, static f => f.Id == "accept-encoding");
         Assert.Equal(Verdict.Suspicious, report.Verdict);
+    }
+
+    [Fact]
+    public async Task ChromeCookiesGroupedInOneOfSeveralFieldsAreFlagged()
+    {
+        var report = await BuildHttp2Async(BuiltInProfiles.Chrome154Windows, ["a=1; b=2", "c=3"]);
+
+        Assert.Contains(report.Findings, static f => f.Id == "cookies-joined");
+    }
+
+    [Fact]
+    public async Task CookiesAreNotJudgedAgainstAProfileWhoseHpackWasNeverCaptured()
+    {
+        Assert.Null(BuiltInProfiles.Firefox157Windows.Http2.Hpack);
+
+        var report = await BuildHttp2Async(BuiltInProfiles.Firefox157Windows, ["a=1", "b=2"]);
+
+        Assert.DoesNotContain(report.Findings, static f => f.Id is "cookies-split" or "cookies-joined" or "hpack-representation");
     }
 
     [Fact]
