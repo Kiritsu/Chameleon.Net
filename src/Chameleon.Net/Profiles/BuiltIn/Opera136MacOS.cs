@@ -51,7 +51,8 @@ public static partial class BuiltInProfiles
             {
                 [RequestKind.Navigate] = new Http2HeadersPriority(0, 255, true),
             },
-            FirstStreamId: 1),
+            FirstStreamId: 1,
+            Hpack: new HpackProfile(SplitCookies: true)),
         Headers: new HeaderProfile(
             HeaderOrder:
             [

@@ -1,5 +1,6 @@
 using System.Net;
 using Chameleon.Net.Fingerprints;
+using Chameleon.Net.Inspector.Analysis;
 using Chameleon.Net.Inspector.Reports;
 using Chameleon.Net.Inspector.Tls;
 using Chameleon.Net.Profiles;
@@ -39,6 +40,9 @@ internal sealed record Http2ConnectionCapture(
 /// <param name="Version">"1.1", "1.0" or "2".</param>
 /// <param name="Headers">Regular headers in the order and spelling received.</param>
 /// <param name="PseudoHeaders">HTTP/2 pseudo-header names in the order received.</param>
+/// <param name="Hpack">HTTP/2: how each header block field was encoded.</param>
+/// <param name="HpackDifferences">HTTP/2: per set of HPACK rules, the fields an encoder following them, fed this connection's header blocks
+/// in order, encodes differently.</param>
 internal sealed record RequestCapture(
     string Version,
     string Method,
@@ -48,7 +52,9 @@ internal sealed record RequestCapture(
     IReadOnlyList<string> PseudoHeaders,
     bool WebSocket,
     int StreamId = 0,
-    PriorityReport? Priority = null)
+    PriorityReport? Priority = null,
+    IReadOnlyList<HpackFieldReport>? Hpack = null,
+    IReadOnlyDictionary<HpackIndexing, List<HpackDifference>>? HpackDifferences = null)
 {
     public string? Header(string name) => Headers.FirstOrDefault(h => h.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Value;
 }

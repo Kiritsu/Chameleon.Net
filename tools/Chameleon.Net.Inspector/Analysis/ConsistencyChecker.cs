@@ -181,6 +181,30 @@ internal sealed partial class ConsistencyChecker(
             Add(Severity.Low, "http2", "first-stream-id", $"The first request used stream {http2.FirstStreamId}; {reference.Name} starts at {profile.FirstStreamId}.");
         }
 
+        // Only against HPACK behaviour seen on the real client: profiles with Hpack set, and OkHttp, whose encoder the defaults copy.
+        if (profile.Hpack is null && reference.Family != ClientFamily.OkHttp)
+        {
+            return;
+        }
+
+        // The session replayed this connection's header blocks through each set of rules, up to and including this request's.
+        if (request.HpackDifferences?.GetValueOrDefault(profile.Hpack?.Indexing ?? HpackIndexing.OkHttp) is [var first, ..] differences)
+        {
+            Add(Severity.Medium, "http2", "hpack-representation",
+                $"{differences.Count} header field(s) encoded unlike {reference.Name}'s HPACK encoder; first '{first.Name}': {first.Actual}, expected {first.Expected}.");
+        }
+
+        var cookies = request.Headers.Where(static h => h.Name.Equals("cookie", StringComparison.OrdinalIgnoreCase)).ToList();
+        var splits = profile.Hpack?.SplitCookies == true;
+        if (splits && cookies.Any(static c => c.Value.Contains(';', StringComparison.Ordinal)))
+        {
+            Add(Severity.Medium, "http2", "cookies-joined", $"Several cookies in one cookie field; {reference.Name} sends each cookie as its own field.");
+        }
+        else if (!splits && cookies.Count > 1)
+        {
+            Add(Severity.Medium, "http2", "cookies-split", $"{cookies.Count} cookie fields; {reference.Name} sends its cookies joined in one field.");
+        }
+
         static string Describe(PriorityReport? priority) =>
             priority is null ? "none" : $"{(priority.Exclusive ? "exclusive " : "")}weight {priority.Weight} on stream {priority.DependsOn}";
     }

@@ -40,6 +40,8 @@ public sealed class ProfileExportTests
 
         Assert.Equal(original.Tls.Shuffle, exported.Tls.Shuffle);
         Assert.Equal(original.Tls.Grease, exported.Tls.Grease);
+        // The export states the HPACK rules it saw; a profile without them has the defaults.
+        Assert.Equal(original.Http2.Hpack ?? new HpackProfile(), exported.Http2.Hpack);
         Assert.Equal(originalReports.Count, exportedReports.Count);
         foreach (var (expected, actual) in originalReports.Zip(exportedReports))
         {

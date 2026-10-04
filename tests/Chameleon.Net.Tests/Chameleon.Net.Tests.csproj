@@ -17,6 +17,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- What real browsers sent, as the inspector reported it. -->
+        <None Include="Inspector\Captures\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
+    <ItemGroup>
         <!-- Kestrel: a real HTTP/2 server to test against. -->
         <FrameworkReference Include="Microsoft.AspNetCore.App" />
     </ItemGroup>

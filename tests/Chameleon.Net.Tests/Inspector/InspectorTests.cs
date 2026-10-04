@@ -225,6 +225,35 @@ public sealed class InspectorTests
         Assert.Contains("okhttp4_android_13", report.Client.TlsMatches);
     }
 
+    [Theory]
+    [MemberData(nameof(ProfileNames))]
+    public async Task BuiltInProfilesSendCookiesOverHttp2LikeTheirClient(string name)
+    {
+        var profile = Profiles[name];
+        await using var server = await StartAsync();
+        using var client = Client(profile);
+        client.DefaultRequestHeaders.Add("Cookie", "b=2; a=1");
+
+        var report = await GetReportAsync(client, new Uri($"https://localhost:{server.Port}/inspect"), RequestKind.Fetch);
+
+        string[] expected = profile.Http2.Hpack?.SplitCookies == true ? ["b=2", "a=1"] : ["b=2; a=1"];
+        Assert.Equal(expected, report.Http!.Headers.Where(static h => h.Name == "cookie").Select(static h => h.Value));
+        AssertConsistent(report);
+    }
+
+    [Fact]
+    public async Task ChromeUserAgentWithJoinedCookiesIsFlagged()
+    {
+        var chrome = BuiltInProfiles.Chrome154Windows;
+        await using var server = await StartAsync();
+        using var client = Client(chrome with { Http2 = chrome.Http2 with { Hpack = null } });
+        client.DefaultRequestHeaders.Add("Cookie", "b=2; a=1");
+
+        var report = await GetReportAsync(client, new Uri($"https://localhost:{server.Port}/inspect"), RequestKind.Fetch);
+
+        Assert.Contains(report.Findings, static f => f.Id == "cookies-joined");
+    }
+
     [Fact]
     public async Task ReportsSurviveAJsonRoundTrip()
     {

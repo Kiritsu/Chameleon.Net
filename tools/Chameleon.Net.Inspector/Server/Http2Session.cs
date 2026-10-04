@@ -20,7 +20,10 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
 
     private static ReadOnlySpan<byte> Preface => "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"u8;
 
-    private readonly HpackDecoder _decoder = new(4096);
+    private readonly HpackDecoder _decoder = new(HpackReplayer.TableSize);
+
+    /// <summary>One per set of HPACK rules, fed every header block in wire order, trailers included, so each sees the client's table.</summary>
+    private readonly Dictionary<HpackIndexing, HpackReplayer> _replayers = Enum.GetValues<HpackIndexing>().ToDictionary(static rules => rules, static rules => new HpackReplayer(rules));
     private readonly HpackEncoder _encoder = new();
     private readonly List<FrameReport> _frames = [];
     private readonly List<string> _priorityFrames = [];
@@ -227,7 +230,9 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
     {
         var (streamId, flags, priority, block) = _continuation!.Value;
         _continuation = null;
-        var fields = _decoder.Decode(block.ToArray());
+        var trace = new List<HpackFieldTrace>();
+        var fields = _decoder.Decode(block.ToArray(), trace);
+        var differences = _replayers.ToDictionary(static r => r.Key, r => r.Value.Next(fields, trace));
         var pseudo = fields.Where(static f => f.Key.StartsWith(':')).Select(static f => f.Key).ToList();
 
         if (_streams.TryGetValue(streamId, out var existing))
@@ -262,7 +267,9 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
             pseudo,
             WebSocket: false,
             streamId,
-            priority);
+            priority,
+            HpackReports(fields, trace),
+            differences);
 
         var open = new OpenStream(request) { SendWindow = _peerInitialWindow };
         _streams[streamId] = open;
@@ -426,6 +433,23 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
         9 => "NO_RFC7540_PRIORITIES",
         _ => id.ToString(CultureInfo.InvariantCulture),
     };
+
+    private static List<HpackFieldReport> HpackReports(List<KeyValuePair<string, string>> fields, List<HpackFieldTrace> trace)
+    {
+        var reports = new List<HpackFieldReport>(trace.Count);
+        var field = 0;
+        foreach (var entry in trace)
+        {
+            reports.Add(entry.Representation switch
+            {
+                HpackRepresentation.SizeUpdate => new HpackFieldReport(null, entry.Representation, entry.Index),
+                HpackRepresentation.Indexed => new HpackFieldReport(fields[field++].Key, entry.Representation, entry.Index),
+                _ => new HpackFieldReport(fields[field++].Key, entry.Representation, entry.Index == 0 ? null : entry.Index, entry.ValueHuffman, entry.NameHuffman),
+            });
+        }
+
+        return reports;
+    }
 
     private sealed class OpenStream(RequestCapture request)
     {

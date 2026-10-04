@@ -10,8 +10,9 @@ internal sealed class HpackDecoder(int maxTableSize)
     private readonly HpackDynamicTable _table = new(maxTableSize);
 
     /// <param name="block">A complete header block (HEADERS/PUSH_PROMISE payload plus all CONTINUATIONs).</param>
+    /// <param name="trace">Receives each field's representation, size updates included, in wire order.</param>
     /// <exception cref="HpackException">The block is malformed; the connection must be closed.</exception>
-    public List<KeyValuePair<string, string>> Decode(ReadOnlySpan<byte> block)
+    public List<KeyValuePair<string, string>> Decode(ReadOnlySpan<byte> block, List<HpackFieldTrace>? trace = null)
     {
         var headers = new List<KeyValuePair<string, string>>();
         var listSize = 0;
@@ -24,11 +25,13 @@ internal sealed class HpackDecoder(int maxTableSize)
 
             if ((first & 0x80) != 0)
             {
-                header = Lookup(HpackInteger.Read(block, ref offset, 7));
+                var index = HpackInteger.Read(block, ref offset, 7);
+                header = Lookup(index);
+                trace?.Add(new HpackFieldTrace(HpackRepresentation.Indexed, index));
             }
             else if ((first & 0xC0) == 0x40)
             {
-                header = ReadLiteral(block, ref offset, 6);
+                header = ReadLiteral(block, ref offset, 6, HpackRepresentation.IncrementalIndexing, trace);
                 _table.Add(header.Key, header.Value);
             }
             else if ((first & 0xE0) == 0x20)
@@ -45,12 +48,14 @@ internal sealed class HpackDecoder(int maxTableSize)
                 }
 
                 _table.Resize(size);
+                trace?.Add(new HpackFieldTrace(HpackRepresentation.SizeUpdate, size));
                 continue;
             }
             else
             {
                 // Literal without indexing (0000) or never indexed (0001).
-                header = ReadLiteral(block, ref offset, 4);
+                var representation = (first & 0xF0) == 0x10 ? HpackRepresentation.NeverIndexed : HpackRepresentation.WithoutIndexing;
+                header = ReadLiteral(block, ref offset, 4, representation, trace);
             }
 
             listSize += header.Key.Length + header.Value.Length;
@@ -65,21 +70,25 @@ internal sealed class HpackDecoder(int maxTableSize)
         return headers;
     }
 
-    private KeyValuePair<string, string> ReadLiteral(ReadOnlySpan<byte> block, ref int offset, int prefixBits)
+    private KeyValuePair<string, string> ReadLiteral(
+        ReadOnlySpan<byte> block, ref int offset, int prefixBits, HpackRepresentation representation, List<HpackFieldTrace>? trace)
     {
         var nameIndex = HpackInteger.Read(block, ref offset, prefixBits);
-        var name = nameIndex == 0 ? ReadString(block, ref offset) : Lookup(nameIndex).Key;
-        return new(name, ReadString(block, ref offset));
+        var nameHuffman = false;
+        var name = nameIndex == 0 ? ReadString(block, ref offset, out nameHuffman) : Lookup(nameIndex).Key;
+        var value = ReadString(block, ref offset, out var valueHuffman);
+        trace?.Add(new HpackFieldTrace(representation, nameIndex, nameHuffman, valueHuffman));
+        return new(name, value);
     }
 
-    private static string ReadString(ReadOnlySpan<byte> block, ref int offset)
+    private static string ReadString(ReadOnlySpan<byte> block, ref int offset, out bool huffman)
     {
         if (offset >= block.Length)
         {
             throw new HpackException("Truncated string literal.");
         }
 
-        var huffman = (block[offset] & 0x80) != 0;
+        huffman = (block[offset] & 0x80) != 0;
         var length = HpackInteger.Read(block, ref offset, 7);
         if (length > block.Length - offset)
         {

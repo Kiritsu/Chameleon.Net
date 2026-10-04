@@ -141,7 +141,14 @@ internal static class ProfileSourceWriter
             source.AppendLine("            },");
         }
 
-        source.AppendLine(CultureInfo.InvariantCulture, $"            FirstStreamId: {http2.FirstStreamId}),");
+        source.Append(CultureInfo.InvariantCulture, $"            FirstStreamId: {http2.FirstStreamId}");
+        if (http2.Hpack is { } hpack)
+        {
+            var indexing = hpack.Indexing == HpackIndexing.OkHttp ? "" : $", Indexing: HpackIndexing.{hpack.Indexing}";
+            source.AppendLine(",").Append(CultureInfo.InvariantCulture, $"            Hpack: new HpackProfile(SplitCookies: {Bool(hpack.SplitCookies)}{indexing})");
+        }
+
+        source.AppendLine("),");
     }
 
     private static void WriteHeaders(StringBuilder source, HeaderProfile headers)

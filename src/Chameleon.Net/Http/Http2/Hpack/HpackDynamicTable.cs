@@ -3,7 +3,7 @@ namespace Chameleon.Net.Http.Http2.Hpack;
 /// <summary>RFC 7541 §4. Index 0 is the newest entry. Names and values are Latin-1 strings, so string length equals octet length.</summary>
 internal sealed class HpackDynamicTable(int maxSize)
 {
-    private const int EntryOverhead = 32;
+    public const int EntryOverhead = 32;
 
     private readonly List<KeyValuePair<string, string>> _entries = [];
     private int _size;
