@@ -1,3 +1,5 @@
+using Chameleon.Net.Http.Http2.Hpack;
+
 namespace Chameleon.Net.Inspector.Reports;
 
 /// <summary>What the inspector saw of one request (or of a TLS handshake that never got to one), as returned to the client.</summary>
@@ -80,6 +82,7 @@ internal sealed record HeaderField(string Name, string Value);
 
 /// <param name="Frames">What the client sent before its first request, then that request's HEADERS.</param>
 /// <param name="Priority">This request's HEADERS priority, if the frame carried one.</param>
+/// <param name="Hpack">How each field of this request's header block was encoded, in wire order.</param>
 internal sealed record Http2Report(
     string Akamai,
     string AkamaiHash,
@@ -87,7 +90,15 @@ internal sealed record Http2Report(
     int FirstStreamId,
     int StreamId,
     PriorityReport? Priority,
-    string PseudoHeaderOrder);
+    string PseudoHeaderOrder,
+    IReadOnlyList<HpackFieldReport>? Hpack = null);
+
+/// <param name="Name">Null for a dynamic table size update.</param>
+/// <param name="Index">Indexed fields: the entry (static up to 61, dynamic above). Literals: the name's index, null for a new name.
+/// Size updates: the new size.</param>
+/// <param name="Huffman">Literals: the value was Huffman-coded.</param>
+/// <param name="NameHuffman">Literals with a new name: the name was Huffman-coded.</param>
+internal sealed record HpackFieldReport(string? Name, HpackRepresentation Representation, int? Index, bool Huffman = false, bool NameHuffman = false);
 
 internal sealed record FrameReport(string Type, int StreamId, string? Flags, string? Detail);
 

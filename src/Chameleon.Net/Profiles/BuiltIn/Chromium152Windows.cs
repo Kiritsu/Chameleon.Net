@@ -61,7 +61,8 @@ public static partial class BuiltInProfiles
         HeadersPriorityOverrides: new Dictionary<RequestKind, Http2HeadersPriority>
         {
             [RequestKind.Navigate] = new(0, 255, true),
-        });
+        },
+        Hpack: new HpackProfile(SplitCookies: true));
 
     private static HeaderProfile ChromiumFamilyHeaders(string userAgent, string brands, bool navigationClientHints) => new(
         HeaderOrder:

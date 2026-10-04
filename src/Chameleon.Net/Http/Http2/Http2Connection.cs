@@ -244,10 +244,15 @@ internal sealed class Http2Connection : IHttpConnection
             });
         }
 
+        var splitCookies = Profile.Http2.Hpack?.SplitCookies == true;
         foreach (var (name, value) in plan.Headers)
         {
             var isTeTrailers = string.Equals(name, "TE", StringComparison.OrdinalIgnoreCase) && value == "trailers";
-            if (!ConnectionSpecific.Contains(name) || isTeTrailers)
+            if (splitCookies && string.Equals(name, "Cookie", StringComparison.OrdinalIgnoreCase))
+            {
+                headers.AddRange(CookieCrumbs(value).Select(static crumb => new KeyValuePair<string, string>("cookie", crumb)));
+            }
+            else if (!ConnectionSpecific.Contains(name) || isTeTrailers)
             {
                 headers.Add(new(name.ToLowerInvariant(), value));
             }
@@ -255,6 +260,13 @@ internal sealed class Http2Connection : IHttpConnection
 
         return headers;
     }
+
+    /// <summary>Chrome's crumbs (quiche <c>CookieToCrumbs</c>): the value trimmed of spaces and tabs, split on ';', each split dropping one
+    /// following space.</summary>
+    private static IEnumerable<string> CookieCrumbs(string cookie) => cookie
+        .Trim(' ', '\t')
+        .Split(';')
+        .Select(static (crumb, index) => index > 0 && crumb.StartsWith(' ') ? crumb[1..] : crumb);
 
     private static HttpResponseMessage CreateResponse(HttpRequestMessage request, Http2Stream stream, List<KeyValuePair<string, string>> headers, bool transparentDecompression)
     {

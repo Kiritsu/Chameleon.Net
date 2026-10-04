@@ -203,6 +203,10 @@ the first frames the client sends after the connection preface:
   the request's urgency — 256 for a navigation, 220 for a `fetch()` — so put the per-kind values in
   `HeadersPriorityOverrides`.
 - the stream id of that first HEADERS → `FirstStreamId` (Firefox uses 3, everyone else 1).
+- with two cookies or more, whether the request carries one `cookie` field per cookie →
+  `Hpack: new HpackProfile(SplitCookies: true)` (Chrome and every Chromium-based browser), or one
+  joined field (OkHttp; leave `Hpack` out). The Inspector reports each field's HPACK representation
+  and flags a client whose encoding differs from its reference profile's.
 
 tls.peet.ws (§2) shows all of this without key logging.
 

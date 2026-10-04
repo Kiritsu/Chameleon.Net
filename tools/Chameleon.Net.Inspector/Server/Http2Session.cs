@@ -227,7 +227,8 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
     {
         var (streamId, flags, priority, block) = _continuation!.Value;
         _continuation = null;
-        var fields = _decoder.Decode(block.ToArray());
+        var trace = new List<HpackFieldTrace>();
+        var fields = _decoder.Decode(block.ToArray(), trace);
         var pseudo = fields.Where(static f => f.Key.StartsWith(':')).Select(static f => f.Key).ToList();
 
         if (_streams.TryGetValue(streamId, out var existing))
@@ -262,7 +263,8 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
             pseudo,
             WebSocket: false,
             streamId,
-            priority);
+            priority,
+            HpackReports(fields, trace));
 
         var open = new OpenStream(request) { SendWindow = _peerInitialWindow };
         _streams[streamId] = open;
@@ -426,6 +428,23 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
         9 => "NO_RFC7540_PRIORITIES",
         _ => id.ToString(CultureInfo.InvariantCulture),
     };
+
+    private static List<HpackFieldReport> HpackReports(List<KeyValuePair<string, string>> fields, List<HpackFieldTrace> trace)
+    {
+        var reports = new List<HpackFieldReport>(trace.Count);
+        var field = 0;
+        foreach (var entry in trace)
+        {
+            reports.Add(entry.Representation switch
+            {
+                HpackRepresentation.SizeUpdate => new HpackFieldReport(null, entry.Representation, entry.Index),
+                HpackRepresentation.Indexed => new HpackFieldReport(fields[field++].Key, entry.Representation, entry.Index),
+                _ => new HpackFieldReport(fields[field++].Key, entry.Representation, entry.Index == 0 ? null : entry.Index, entry.ValueHuffman, entry.NameHuffman),
+            });
+        }
+
+        return reports;
+    }
 
     private sealed class OpenStream(RequestCapture request)
     {

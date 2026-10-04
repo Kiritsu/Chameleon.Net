@@ -298,7 +298,8 @@ internal sealed class InspectorServer : IAsyncDisposable
         if (!request.WebSocket && path == "/capture")
         {
             return new InspectorResponse(200, "text/html; charset=utf-8", System.Text.Encoding.UTF8.GetBytes(CapturePages.Start),
-                [new("Set-Cookie", $"{CapturePages.CookieName}=1; Path=/")]);
+                // Two cookies: browsers that split the Cookie header into one HTTP/2 field per cookie show it only with more than one.
+                [new("Set-Cookie", $"{CapturePages.CookieName}=1; Path=/"), new("Set-Cookie", $"{CapturePages.CookieName}_second=2; Path=/")]);
         }
 
         if (!request.WebSocket && path == "/capture/plain")

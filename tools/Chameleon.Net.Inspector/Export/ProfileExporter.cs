@@ -197,7 +197,24 @@ internal static class ProfileExporter
             }
         }
 
-        return (new Http2Profile(capture.Preface, pseudo, basePriority, overrides.Count == 0 ? null : overrides, (uint)capture.FirstStreamId), capture.Akamai);
+        return (new Http2Profile(capture.Preface, pseudo, basePriority, overrides.Count == 0 ? null : overrides, (uint)capture.FirstStreamId,
+            ExportHpack(requests, notes)), capture.Akamai);
+    }
+
+    /// <summary>Cookie splitting shows only on an HTTP/2 request carrying two cookies or more: one field each, or one joined field.</summary>
+    private static HpackProfile? ExportHpack(List<Seen> requests, List<string> notes)
+    {
+        var cookieFields = requests.Where(static r => r.Http2)
+            .Select(static r => r.Request.Headers.Where(static h => h.Name.Equals("cookie", StringComparison.OrdinalIgnoreCase)).ToList())
+            .Where(static fields => fields.Count > 1 || (fields.Count == 1 && fields[0].Value.Contains(';', StringComparison.Ordinal)))
+            .ToList();
+        if (cookieFields.Count == 0)
+        {
+            notes.Add("No HTTP/2 request carried two cookies: whether the client splits the Cookie header is unknown (not split).");
+            return null;
+        }
+
+        return cookieFields.Any(static fields => fields.Count > 1) ? new HpackProfile(SplitCookies: true) : null;
     }
 
     private static Http2HeadersPriority? Priority(PriorityReport? priority) =>

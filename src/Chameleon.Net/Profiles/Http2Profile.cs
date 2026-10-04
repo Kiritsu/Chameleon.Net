@@ -5,16 +5,23 @@ namespace Chameleon.Net.Profiles;
 /// from the request's urgency: 256 for navigations, 220 for fetch()).</param>
 /// <param name="FirstStreamId">Stream id of the first request on a connection (odd). Firefox starts at 3; everyone else at 1.
 /// Preface PRIORITY frames push it further: requests never reuse a stream they name.</param>
+/// <param name="Hpack">How header blocks are encoded. Null: OkHttp's way.</param>
 public sealed record Http2Profile(
     IReadOnlyList<Http2PrefaceFrame> Preface,
     IReadOnlyList<PseudoHeader> PseudoHeaderOrder,
     Http2HeadersPriority? HeadersPriority,
     IReadOnlyDictionary<RequestKind, Http2HeadersPriority>? HeadersPriorityOverrides = null,
-    uint FirstStreamId = 1)
+    uint FirstStreamId = 1,
+    HpackProfile? Hpack = null)
 {
     public Http2HeadersPriority? PriorityFor(RequestKind kind) =>
         HeadersPriorityOverrides is not null && HeadersPriorityOverrides.TryGetValue(kind, out var priority) ? priority : HeadersPriority;
 }
+
+/// <summary>Header block encoding choices a server can see in the HPACK representation.</summary>
+/// <param name="SplitCookies">Send each cookie as its own <c>cookie</c> field (RFC 9113 §8.2.3), as Chrome does, so each one is indexed
+/// separately. OkHttp sends the Cookie header as one field.</param>
+public sealed record HpackProfile(bool SplitCookies = false);
 
 public abstract record Http2PrefaceFrame;
 

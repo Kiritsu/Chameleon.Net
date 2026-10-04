@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.RegularExpressions;
+using Chameleon.Net.Http.Http2.Hpack;
 using Chameleon.Net.Inspector.Reports;
 using Chameleon.Net.Inspector.Server;
 using Chameleon.Net.Profiles;
@@ -181,8 +182,74 @@ internal sealed partial class ConsistencyChecker(
             Add(Severity.Low, "http2", "first-stream-id", $"The first request used stream {http2.FirstStreamId}; {reference.Name} starts at {profile.FirstStreamId}.");
         }
 
+        if (request.StreamId == http2.FirstStreamId && request.Hpack is { } hpack)
+        {
+            CheckHpack(reference, hpack);
+        }
+
+        var cookies = request.Headers.Where(static h => h.Name.Equals("cookie", StringComparison.OrdinalIgnoreCase)).ToList();
+        var splits = profile.Hpack?.SplitCookies == true;
+        if (splits && cookies is [{ } joined] && joined.Value.Contains(';', StringComparison.Ordinal))
+        {
+            Add(Severity.Medium, "http2", "cookies-joined", $"Several cookies in one cookie field; {reference.Name} sends each cookie as its own field.");
+        }
+        else if (!splits && cookies.Count > 1)
+        {
+            Add(Severity.Medium, "http2", "cookies-split", $"{cookies.Count} cookie fields; {reference.Name} sends its cookies joined in one field.");
+        }
+
         static string Describe(PriorityReport? priority) =>
             priority is null ? "none" : $"{(priority.Exclusive ? "exclusive " : "")}weight {priority.Weight} on stream {priority.DependsOn}";
+    }
+
+    /// <summary>On a connection's first request both dynamic tables start empty, so the reference client's encoder, given the same fields,
+    /// must produce the same representations: indexed or literal, which literal, Huffman or raw.</summary>
+    private void CheckHpack(KnownClient reference, IReadOnlyList<HpackFieldReport> hpack)
+    {
+        var observed = hpack.Where(static f => f.Representation != HpackRepresentation.SizeUpdate).ToList();
+        var regular = request.Headers.GetEnumerator();
+        var fields = new List<KeyValuePair<string, string>>(observed.Count);
+        foreach (var field in observed)
+        {
+            var value = field.Name switch
+            {
+                ":method" => request.Method,
+                ":path" => request.Path,
+                ":authority" => request.Authority,
+                ":scheme" => connection.Hello is null ? "http" : "https",
+                _ => regular.MoveNext() ? regular.Current.Value : null,
+            };
+            if (value is null)
+            {
+                return;
+            }
+
+            fields.Add(new(field.Name!, value));
+        }
+
+        var trace = new List<HpackFieldTrace>();
+        new HpackDecoder(int.MaxValue).Decode(new HpackEncoder().Encode(fields), trace);
+        var expected = trace
+            .Where(static t => t.Representation != HpackRepresentation.SizeUpdate)
+            .Select(static t => Describe(t.Representation, t.Index, t.ValueHuffman, t.NameHuffman))
+            .ToList();
+
+        var differences = observed
+            .Select(static f => (f.Name, Actual: Describe(f.Representation, f.Index ?? 0, f.Huffman, f.NameHuffman)))
+            .Zip(expected, static (field, wanted) => (field.Name, field.Actual, Expected: wanted))
+            .Where(static f => f.Actual != f.Expected)
+            .ToList();
+        if (differences.Count > 0)
+        {
+            var first = differences[0];
+            Add(Severity.Medium, "http2", "hpack-representation",
+                $"{differences.Count} header field(s) encoded unlike {reference.Name}'s HPACK encoder; first '{first.Name}': {first.Actual}, expected {first.Expected}.");
+        }
+
+        static string Describe(HpackRepresentation representation, int index, bool valueHuffman, bool nameHuffman) =>
+            representation == HpackRepresentation.Indexed
+                ? $"indexed {index}"
+                : $"{representation} literal with {(index == 0 ? $"a new {(nameHuffman ? "Huffman" : "raw")} name" : $"name {index}")} and a {(valueHuffman ? "Huffman" : "raw")} value";
     }
 
     private void CheckHeaders(KnownClient reference)

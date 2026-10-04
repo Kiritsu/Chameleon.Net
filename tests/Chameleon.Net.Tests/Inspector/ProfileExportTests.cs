@@ -40,6 +40,7 @@ public sealed class ProfileExportTests
 
         Assert.Equal(original.Tls.Shuffle, exported.Tls.Shuffle);
         Assert.Equal(original.Tls.Grease, exported.Tls.Grease);
+        Assert.Equal(original.Http2.Hpack, exported.Http2.Hpack);
         Assert.Equal(originalReports.Count, exportedReports.Count);
         foreach (var (expected, actual) in originalReports.Zip(exportedReports))
         {

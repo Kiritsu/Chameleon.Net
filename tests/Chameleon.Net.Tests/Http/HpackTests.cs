@@ -27,6 +27,27 @@ public sealed class HpackTests
         "828785bf408825a849e95ba97d7f8925a849e95bb8e8b4bf",
     ];
 
+    [Fact]
+    public void DecoderTracesEachRepresentation()
+    {
+        // RFC 7541 C.4.1's :authority, C.2.2's :path and C.2.3's never-indexed password, after a size update and an indexed :method.
+        var block = Convert.FromHexString("3fe11f" + "82" + "418cf1e3c2e5f23a6ba0ab90f4ff" + "040c2f73616d706c652f70617468" + "100870617373776f726406736563726574");
+        var trace = new List<HpackFieldTrace>();
+
+        var headers = new HpackDecoder(4096).Decode(block, trace);
+
+        Assert.Equal([":method", ":authority", ":path", "password"], headers.Select(static h => h.Key));
+        Assert.Equal(
+            [
+                new HpackFieldTrace(HpackRepresentation.SizeUpdate, 4096),
+                new HpackFieldTrace(HpackRepresentation.Indexed, 2),
+                new HpackFieldTrace(HpackRepresentation.IncrementalIndexing, 1, ValueHuffman: true),
+                new HpackFieldTrace(HpackRepresentation.WithoutIndexing, 4),
+                new HpackFieldTrace(HpackRepresentation.NeverIndexed, 0),
+            ],
+            trace);
+    }
+
     [Theory]
     [InlineData(10, 5, "0a")]
     [InlineData(1337, 5, "1f9a0a")]
