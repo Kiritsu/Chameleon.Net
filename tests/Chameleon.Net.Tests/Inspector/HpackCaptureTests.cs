@@ -1,0 +1,51 @@
+using System.Text.Json;
+using Chameleon.Net.Inspector.Analysis;
+using Chameleon.Net.Inspector.Reports;
+using Chameleon.Net.Inspector.Server;
+using Chameleon.Net.Profiles;
+
+namespace Chameleon.Net.Tests.Inspector;
+
+/// <summary>Header blocks real browsers sent on one HTTP/2 connection (Captures/*.hpack.jsonl, from the inspector's reports), replayed
+/// through each set of HPACK rules: the browser's must reproduce every field, the other must not.</summary>
+public sealed class HpackCaptureTests
+{
+    [Theory]
+    [InlineData("edge-154-windows", HpackIndexing.OkHttp)]
+    [InlineData("safari-26-macos", HpackIndexing.Nghttp2)]
+    public void TheBrowsersRulesReproduceItsHeaderBlocks(string capture, HpackIndexing rules)
+    {
+        var requests = Load(capture);
+
+        // The captures leave out the /favicon.ico request the browser sent on the same connection: its entries shift dynamic indices.
+        Assert.All(HpackReplay.Compare(requests, tls: true, rules, anyDynamicIndex: true), static differences => Assert.Empty(differences));
+        var other = rules == HpackIndexing.OkHttp ? HpackIndexing.Nghttp2 : HpackIndexing.OkHttp;
+        Assert.Contains(HpackReplay.Compare(requests, tls: true, other, anyDynamicIndex: true), static differences => differences.Count > 0);
+    }
+
+    [Theory]
+    [InlineData("edge-154-windows")]
+    [InlineData("safari-26-macos")]
+    public void BothBrowsersSendOneFieldPerCookie(string capture)
+    {
+        var withCookies = Load(capture).Where(static r => r.Header("cookie") is not null).ToList();
+
+        Assert.NotEmpty(withCookies);
+        Assert.All(withCookies, static r => Assert.Equal(2, r.Headers.Count(static h => h.Name == "cookie")));
+    }
+
+    [Fact]
+    public void BuiltInProfilesUseTheRulesTheirBrowserWasSeenWith()
+    {
+        Assert.Equal(new HpackProfile(SplitCookies: true), BuiltInProfiles.Edge154Windows.Http2.Hpack);
+        Assert.Equal(new HpackProfile(SplitCookies: true, HpackIndexing.Nghttp2), BuiltInProfiles.Safari26MacOS.Http2.Hpack);
+    }
+
+    private static List<RequestCapture> Load(string capture) =>
+        [.. File.ReadLines(Path.Combine(AppContext.BaseDirectory, "Inspector", "Captures", $"{capture}.hpack.jsonl"))
+            .Where(static line => line.Length > 0)
+            .Select(static line => JsonSerializer.Deserialize<CapturedRequest>(line, ReportJson.Options)!)
+            .Select(static r => new RequestCapture("2", r.Method, r.Path, r.Authority, r.Headers, [], WebSocket: false, Hpack: r.Hpack))];
+
+    private sealed record CapturedRequest(string Method, string Path, string? Authority, IReadOnlyList<HeaderField> Headers, IReadOnlyList<HpackFieldReport> Hpack);
+}

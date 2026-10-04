@@ -9,6 +9,7 @@ namespace Chameleon.Net.Inspector.Server;
 /// <summary>What one connection showed before and around its requests.</summary>
 internal sealed class ConnectionCapture(int id, IPEndPoint remote)
 {
+    private readonly List<RequestCapture> _http2Requests = [];
     private int _requests;
 
     public int Id { get; } = id;
@@ -24,6 +25,25 @@ internal sealed class ConnectionCapture(int id, IPEndPoint remote)
     public Http2ConnectionCapture? Http2 { get; set; }
 
     public int NextRequest() => Interlocked.Increment(ref _requests);
+
+    /// <summary>Records an HTTP/2 request when its header block is decoded, so header blocks can be replayed in the client's order.</summary>
+    public void AddHttp2Request(RequestCapture request)
+    {
+        lock (_http2Requests)
+        {
+            _http2Requests.Add(request);
+        }
+    }
+
+    /// <summary>The HTTP/2 requests whose header blocks arrived up to and including this one's, in order; all of them when it is null.</summary>
+    public List<RequestCapture> Http2RequestsThrough(RequestCapture? request = null)
+    {
+        lock (_http2Requests)
+        {
+            var index = request is null ? _http2Requests.Count - 1 : _http2Requests.FindIndex(r => ReferenceEquals(r, request));
+            return index < 0 ? [] : _http2Requests[..(index + 1)];
+        }
+    }
 }
 
 /// <param name="Frames">Everything before the first HEADERS, then that HEADERS frame.</param>

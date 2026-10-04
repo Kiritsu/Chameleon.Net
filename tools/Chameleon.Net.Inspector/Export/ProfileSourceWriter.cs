@@ -144,7 +144,8 @@ internal static class ProfileSourceWriter
         source.Append(CultureInfo.InvariantCulture, $"            FirstStreamId: {http2.FirstStreamId}");
         if (http2.Hpack is { } hpack)
         {
-            source.AppendLine(",").Append(CultureInfo.InvariantCulture, $"            Hpack: new HpackProfile(SplitCookies: {Bool(hpack.SplitCookies)})");
+            var indexing = hpack.Indexing == HpackIndexing.OkHttp ? "" : $", Indexing: HpackIndexing.{hpack.Indexing}";
+            source.AppendLine(",").Append(CultureInfo.InvariantCulture, $"            Hpack: new HpackProfile(SplitCookies: {Bool(hpack.SplitCookies)}{indexing})");
         }
 
         source.AppendLine("),");

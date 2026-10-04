@@ -4,7 +4,6 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Chameleon.Net.Fingerprints;
 using Chameleon.Net.Http;
-using Chameleon.Net.Http.Http2.Hpack;
 using Chameleon.Net.Inspector.Analysis;
 using Chameleon.Net.Inspector.Reports;
 using Chameleon.Net.Inspector.Server;
@@ -239,8 +238,6 @@ public sealed class InspectorTests
 
         string[] expected = profile.Http2.Hpack?.SplitCookies == true ? ["b=2", "a=1"] : ["b=2; a=1"];
         Assert.Equal(expected, report.Http!.Headers.Where(static h => h.Name == "cookie").Select(static h => h.Value));
-        Assert.All(report.Http.Http2!.Hpack!.Where(static f => f.Name == "cookie"),
-            static f => Assert.Equal(HpackRepresentation.IncrementalIndexing, f.Representation));
         AssertConsistent(report);
     }
 

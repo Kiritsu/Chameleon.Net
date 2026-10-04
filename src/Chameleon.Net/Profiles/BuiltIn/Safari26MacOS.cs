@@ -45,7 +45,8 @@ public static partial class BuiltInProfiles
             ],
             PseudoHeaderOrder: [PseudoHeader.Method, PseudoHeader.Scheme, PseudoHeader.Authority, PseudoHeader.Path],
             HeadersPriority: null,
-            FirstStreamId: 1),
+            FirstStreamId: 1,
+            Hpack: new HpackProfile(SplitCookies: true, Indexing: HpackIndexing.Nghttp2)),
         Headers: new HeaderProfile(
             HeaderOrder:
             [

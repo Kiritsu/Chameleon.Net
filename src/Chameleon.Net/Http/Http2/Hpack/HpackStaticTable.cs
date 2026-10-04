@@ -70,6 +70,20 @@ internal static class HpackStaticTable
 
     public static int Count => Entries.Length;
 
+    /// <returns>The 1-based index of the entry with this name and value, or 0.</returns>
+    public static int IndexOf(string name, string value)
+    {
+        for (var i = 0; i < Entries.Length; i++)
+        {
+            if (string.Equals(Entries[i].Key, name, StringComparison.Ordinal) && string.Equals(Entries[i].Value, value, StringComparison.Ordinal))
+            {
+                return i + 1;
+            }
+        }
+
+        return 0;
+    }
+
     /// <returns>The first 1-based index whose name matches, or 0.</returns>
     public static int IndexOfName(string name)
     {

@@ -19,9 +19,23 @@ public sealed record Http2Profile(
 }
 
 /// <summary>Header block encoding choices a server can see in the HPACK representation.</summary>
-/// <param name="SplitCookies">Send each cookie as its own <c>cookie</c> field (RFC 9113 §8.2.3), as Chrome does, so each one is indexed
-/// separately. OkHttp sends the Cookie header as one field.</param>
-public sealed record HpackProfile(bool SplitCookies = false);
+/// <param name="SplitCookies">Send each cookie as its own <c>cookie</c> field (RFC 9113 §8.2.3), as Chrome and Safari do, so each one is
+/// indexed separately. OkHttp sends the Cookie header as one field.</param>
+/// <param name="Indexing">Which fields are indexed, and how.</param>
+public sealed record HpackProfile(bool SplitCookies = false, HpackIndexing Indexing = HpackIndexing.OkHttp);
+
+/// <summary>An HPACK encoder's indexing rules.</summary>
+public enum HpackIndexing
+{
+    /// <summary>OkHttp's encoder, which Chrome matches: every regular field is indexed incrementally, :path and :method's other values
+    /// are literals without indexing, and only :method, :path and :scheme are looked up in the static table with their value.</summary>
+    OkHttp,
+
+    /// <summary>nghttp2's encoder, which Safari matches: authorization and cookies under 20 bytes are never indexed; :path,
+    /// content-length, etag, if-modified-since, if-none-match, location, age and set-cookie are literals without indexing; the whole
+    /// static table is matched with values.</summary>
+    Nghttp2,
+}
 
 public abstract record Http2PrefaceFrame;
 

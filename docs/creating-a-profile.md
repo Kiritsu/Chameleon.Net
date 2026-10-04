@@ -204,9 +204,12 @@ the first frames the client sends after the connection preface:
   `HeadersPriorityOverrides`.
 - the stream id of that first HEADERS → `FirstStreamId` (Firefox uses 3, everyone else 1).
 - with two cookies or more, whether the request carries one `cookie` field per cookie →
-  `Hpack: new HpackProfile(SplitCookies: true)` (Chrome and every Chromium-based browser), or one
-  joined field (OkHttp; leave `Hpack` out). The Inspector reports each field's HPACK representation
-  and flags a client whose encoding differs from its reference profile's.
+  `Hpack: new HpackProfile(SplitCookies: true)` (Chrome, every Chromium-based browser, Safari), or
+  one joined field (OkHttp; leave `Hpack` out).
+- which HPACK indexing rules the client follows → `HpackProfile.Indexing`: `OkHttp` (OkHttp and
+  Chrome) or `Nghttp2` (Safari: cookies under 20 bytes never indexed, `content-length` not indexed).
+  The Inspector reports each field's HPACK representation, replays the connection's header blocks
+  through the reference profile's rules to flag a difference, and picks the rules when exporting.
 
 tls.peet.ws (§2) shows all of this without key logging.
 

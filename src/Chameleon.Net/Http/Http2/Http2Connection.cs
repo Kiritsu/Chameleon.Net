@@ -22,7 +22,7 @@ internal sealed class Http2Connection : IHttpConnection
     private readonly Stream _stream;
     private readonly Http2FrameReader _reader;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private readonly HpackEncoder _encoder = new();
+    private readonly HpackEncoder _encoder;
     private readonly HpackDecoder _decoder;
     private readonly ConcurrentDictionary<int, Http2Stream> _streams = new();
     private readonly Lock _flowLock = new();
@@ -63,6 +63,7 @@ internal sealed class Http2Connection : IHttpConnection
         _localMaxFrameSize = (int)Math.Clamp(LocalSetting(settings, Http2SettingId.MaxFrameSize, Http2Frame.DefaultMaxFrameSize),
             Http2Frame.DefaultMaxFrameSize, Http2Frame.MaxAllowedFrameSize);
         _decoder = new HpackDecoder((int)Math.Min(LocalSetting(settings, Http2SettingId.HeaderTableSize, Http2Frame.DefaultHeaderTableSize), int.MaxValue));
+        _encoder = new HpackEncoder(profile.Http2.Hpack?.Indexing ?? HpackIndexing.OkHttp);
 
         // OkHttp acknowledges consumed bytes once half the initial window is used, per stream and per connection.
         _windowUpdateThreshold = Math.Max(1, localInitialWindow / 2);

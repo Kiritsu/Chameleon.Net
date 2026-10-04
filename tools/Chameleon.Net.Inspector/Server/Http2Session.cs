@@ -265,6 +265,7 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
             streamId,
             priority,
             HpackReports(fields, trace));
+        connection.AddHttp2Request(request);
 
         var open = new OpenStream(request) { SendWindow = _peerInitialWindow };
         _streams[streamId] = open;

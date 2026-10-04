@@ -198,11 +198,12 @@ internal static class ProfileExporter
         }
 
         return (new Http2Profile(capture.Preface, pseudo, basePriority, overrides.Count == 0 ? null : overrides, (uint)capture.FirstStreamId,
-            ExportHpack(requests, notes)), capture.Akamai);
+            ExportHpack(observations, requests, notes)), capture.Akamai);
     }
 
-    /// <summary>Cookie splitting shows only on an HTTP/2 request carrying two cookies or more: one field each, or one joined field.</summary>
-    private static HpackProfile? ExportHpack(List<Seen> requests, List<string> notes)
+    /// <summary>Cookie splitting shows only on an HTTP/2 request carrying two cookies or more: one field each, or one joined field. The
+    /// indexing rules are the ones that, replayed over every HTTP/2 connection, reproduce each field's representation.</summary>
+    private static HpackProfile? ExportHpack(IReadOnlyList<Observation> observations, List<Seen> requests, List<string> notes)
     {
         var cookieFields = requests.Where(static r => r.Http2)
             .Select(static r => r.Request.Headers.Where(static h => h.Name.Equals("cookie", StringComparison.OrdinalIgnoreCase)).ToList())
@@ -211,10 +212,25 @@ internal static class ProfileExporter
         if (cookieFields.Count == 0)
         {
             notes.Add("No HTTP/2 request carried two cookies: whether the client splits the Cookie header is unknown (not split).");
-            return null;
         }
 
-        return cookieFields.Any(static fields => fields.Count > 1) ? new HpackProfile(SplitCookies: true) : null;
+        var connections = observations.Select(static o => o.Connection).Where(static c => c.Http2 is not null).Distinct()
+            .Select(static c => (Requests: c.Http2RequestsThrough(), Tls: c.Hello is not null))
+            .ToList();
+        var indexing = Enum.GetValues<HpackIndexing>()
+            .Where(rules => connections.All(c => HpackReplay.Compare(c.Requests, c.Tls, rules).All(static d => d.Count == 0)))
+            .Cast<HpackIndexing?>()
+            .FirstOrDefault();
+        if (indexing is null)
+        {
+            var difference = connections.SelectMany(static c => HpackReplay.Compare(c.Requests, c.Tls, HpackIndexing.OkHttp)).SelectMany(static d => d).First();
+            notes.Add($"The HPACK encoding follows neither OkHttp's nor nghttp2's rules (OkHttp's kept): '{difference.Name}' was {difference.Actual}, OkHttp's rules give {difference.Expected}.");
+        }
+
+        var splitCookies = cookieFields.Any(static fields => fields.Count > 1);
+        return splitCookies || indexing is { } rules && rules != HpackIndexing.OkHttp
+            ? new HpackProfile(splitCookies, indexing ?? HpackIndexing.OkHttp)
+            : null;
     }
 
     private static Http2HeadersPriority? Priority(PriorityReport? priority) =>
