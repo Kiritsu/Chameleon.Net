@@ -515,6 +515,8 @@ try {
 
     try {
         if ($inspector -and -not $inspector.HasExited) {
+            # The browser's connections closed with it: give the inspector a moment to see that and write connections.jsonl.
+            Start-Sleep -Seconds 2
             $inspector.Kill($true)
         }
     } catch {

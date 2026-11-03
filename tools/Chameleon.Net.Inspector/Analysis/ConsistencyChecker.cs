@@ -184,13 +184,13 @@ internal sealed partial class ConsistencyChecker(
         // Likewise, flow control only against profiles where it was seen, and OkHttp's.
         if (profile.FlowControl is not null || reference.Family == ClientFamily.OkHttp)
         {
-            var rule = profile.FlowControl?.ConnectionUpdate ?? ConnectionWindowUpdate.HalfOfStreamWindow;
-            var threshold = FlowControlRules.Threshold(profile, rule);
-            var increments = FlowControlRules.ConnectionIncrements(connection);
-            if (!FlowControlRules.Matches(increments, threshold))
+            var rule = profile.FlowControl ?? Http2FlowControl.OkHttp;
+            var verdict = FlowControlRules.Judge([connection], profile, rule);
+            if (!verdict.Explained)
             {
                 Add(Severity.Medium, "http2", "connection-window-update",
-                    $"Connection WINDOW_UPDATEs of {string.Join(", ", increments.Distinct().Take(3))}; {reference.Name} acknowledges the connection every {threshold} bytes.");
+                    $"Connection WINDOW_UPDATEs of {string.Join(", ", verdict.Increments.Distinct().Take(3))}; {reference.Name} acknowledges the connection " +
+                    $"every {FlowControlRules.Threshold(profile, rule)} bytes.");
             }
         }
 

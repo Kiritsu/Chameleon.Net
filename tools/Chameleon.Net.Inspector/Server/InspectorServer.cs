@@ -22,6 +22,9 @@ internal sealed class InspectorServer : IAsyncDisposable
     /// <summary>Largest /capture/bytes body: past every browser's initial connection window (Chrome's is 15 MB) twice over.</summary>
     private const int MaxCaptureBytes = 64 << 20;
 
+    /// <summary>Every /capture/bytes body is a slice of it: requests held back by flow control cost no memory of their own.</summary>
+    private static readonly Lazy<byte[]> CaptureBytes = new(static () => new byte[MaxCaptureBytes]);
+
     private static ReadOnlySpan<byte> Http2Preface => "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"u8;
 
     private readonly List<Socket> _listeners;
@@ -275,7 +278,7 @@ internal sealed class InspectorServer : IAsyncDisposable
         var path = request.Path.Split('?')[0];
         if (path == "/favicon.ico")
         {
-            return new InspectorResponse(404, "text/plain", []);
+            return new InspectorResponse(404, "text/plain", ReadOnlyMemory<byte>.Empty);
         }
 
         if (path == "/profiles")
@@ -322,7 +325,7 @@ internal sealed class InspectorServer : IAsyncDisposable
         if (!request.WebSocket && path.StartsWith("/capture/bytes/", StringComparison.Ordinal)
             && int.TryParse(path["/capture/bytes/".Length..], CultureInfo.InvariantCulture, out var size) && size is >= 0 and <= MaxCaptureBytes)
         {
-            return new InspectorResponse(200, "application/octet-stream", new byte[size]);
+            return new InspectorResponse(200, "application/octet-stream", CaptureBytes.Value.AsMemory(0, size));
         }
 
         return new InspectorResponse(200, "application/json; charset=utf-8", JsonSerializer.SerializeToUtf8Bytes(report, ReportJson.Options));

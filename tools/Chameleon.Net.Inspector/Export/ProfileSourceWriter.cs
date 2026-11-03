@@ -150,7 +150,7 @@ internal static class ProfileSourceWriter
 
         if (http2.FlowControl is { } flowControl)
         {
-            source.AppendLine(",").Append(CultureInfo.InvariantCulture, $"            FlowControl: new Http2FlowControl(ConnectionWindowUpdate.{flowControl.ConnectionUpdate})");
+            source.AppendLine(",").Append(CultureInfo.InvariantCulture, $"            FlowControl: Http2FlowControl.{flowControl}");
         }
 
         source.AppendLine("),");

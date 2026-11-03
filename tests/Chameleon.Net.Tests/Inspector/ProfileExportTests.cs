@@ -84,7 +84,7 @@ public sealed class ProfileExportTests
             Assert.Same(profile, type.GetProperty("BraveWindows")!.GetValue(null));
             Assert.Equal("brave_152_windows", profile.Identity.Name);
             Assert.Contains("/// <summary>Brave on a test runner.", source, StringComparison.Ordinal);
-            Assert.Equal(new Http2FlowControl(ConnectionWindowUpdate.HalfOfConnectionWindow), profile.Http2.FlowControl);
+            Assert.Equal(Http2FlowControl.Chromium, profile.Http2.FlowControl);
             Assert.Contains("\"alias\": \"BraveWindows\"", metadata, StringComparison.Ordinal);
             Assert.Contains("\"ja4\": \"t13d1516h2_8daaf6152771_806a8c22fdea\"", metadata, StringComparison.Ordinal);
         }

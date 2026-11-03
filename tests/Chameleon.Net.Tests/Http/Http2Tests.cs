@@ -65,6 +65,38 @@ public sealed class Http2Tests
         Assert.True(body.Select(static (value, index) => value == (byte)(index % 251)).All(static ok => ok));
     }
 
+    /// <summary>Three responses fill the connection window between them before the first is read: what it consumes stays below the
+    /// connection threshold, so without a way out nothing more would come for it.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResponsesReadOneAfterAnotherDoNotStall(bool chrome)
+    {
+        const int size = 8 * 1024 * 1024;
+        await using var server = await StartAsync();
+        using var client = Client(chrome ? BuiltInProfiles.Chrome154Windows : BuiltInProfiles.OkHttp4Android13);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+
+        var responses = new List<HttpResponseMessage>();
+        try
+        {
+            for (var i = 0; i < 3; i++)
+            {
+                responses.Add(await client.GetAsync(server.Url($"/bytes?size={size}"), HttpCompletionOption.ResponseHeadersRead, timeout.Token));
+            }
+
+            foreach (var response in responses)
+            {
+                Assert.Equal(size, (await response.Content.ReadAsByteArrayAsync(timeout.Token)).Length);
+            }
+        }
+        finally
+        {
+            responses.ForEach(static response => response.Dispose());
+        }
+    }
+
     [Fact]
     public async Task TrailersAreExposedAfterTheBody()
     {
@@ -134,7 +166,7 @@ public sealed class Http2Tests
         Assert.Equal("hello h2", await client.GetStringAsync(server.Url("/hello"), CancellationToken));
     }
 
-    private static HttpClient Client() => new(new ChameleonHttpMessageHandler(BuiltInProfiles.OkHttp4Android13))
+    private static HttpClient Client(ClientProfile? profile = null) => new(new ChameleonHttpMessageHandler(profile ?? BuiltInProfiles.OkHttp4Android13))
     {
         DefaultRequestVersion = HttpVersion.Version20,
         DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact,

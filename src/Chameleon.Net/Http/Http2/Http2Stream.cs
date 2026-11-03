@@ -13,8 +13,12 @@ internal sealed class Http2Stream(Http2Connection connection, HttpRequestMessage
     private TaskCompletionSource? _waiter;
     private List<KeyValuePair<string, string>>? _trailers;
 
-    /// <summary>Consumed bytes not yet returned to the server with a stream-level WINDOW_UPDATE.</summary>
+    /// <summary>Consumed bytes not yet returned to the server with a stream-level WINDOW_UPDATE. Guarded by the connection's receive lock,
+    /// as is <see cref="LastWindowUpdate"/>.</summary>
     public int Unacknowledged;
+
+    /// <summary>When the stream was last acknowledged, or opened.</summary>
+    public long LastWindowUpdate;
 
     public Http2Connection Connection => connection;
 
@@ -48,6 +52,18 @@ internal sealed class Http2Stream(Http2Connection connection, HttpRequestMessage
             lock (_sync)
             {
                 return _remoteEnded;
+            }
+        }
+    }
+
+    /// <summary>A read is waiting for data.</summary>
+    public bool IsWaiting
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _waiter is not null;
             }
         }
     }
@@ -168,6 +184,7 @@ internal sealed class Http2Stream(Http2Connection connection, HttpRequestMessage
                 wait = _waiter.Task;
             }
 
+            connection.OnReaderWaiting();
             await wait.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }

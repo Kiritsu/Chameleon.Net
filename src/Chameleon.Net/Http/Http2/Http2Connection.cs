@@ -19,6 +19,9 @@ internal sealed class Http2Connection : IHttpConnection
 
     private static readonly PseudoHeader[] AllPseudoHeaders = [PseudoHeader.Method, PseudoHeader.Authority, PseudoHeader.Scheme, PseudoHeader.Path];
 
+    /// <summary>Chromium's <c>kDefaultTimeToBufferSmallWindowUpdates</c>.</summary>
+    private static readonly TimeSpan SmallWindowUpdateDelay = TimeSpan.FromSeconds(5);
+
     private readonly Stream _stream;
     private readonly Http2FrameReader _reader;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -27,10 +30,13 @@ internal sealed class Http2Connection : IHttpConnection
     private readonly ConcurrentDictionary<int, Http2Stream> _streams = new();
     private readonly Lock _flowLock = new();
     private readonly Lock _slotLock = new();
+    private readonly Lock _receiveLock = new();
     private readonly Queue<TaskCompletionSource> _slotWaiters = new();
     private readonly int _localMaxFrameSize;
     private readonly int _windowUpdateThreshold;
     private readonly int _connectionUpdateThreshold;
+    private readonly bool _chromiumFlowControl;
+    private readonly long _connectionReceiveWindow;
     private readonly ILogger _logger;
 
     private TaskCompletionSource _flowChanged = NewSignal();
@@ -40,7 +46,12 @@ internal sealed class Http2Connection : IHttpConnection
     private int _peerMaxConcurrentStreams = int.MaxValue;
     private int _activeStreams;
     private int _nextStreamId;
+
+    // Guarded by _receiveLock: consumed bytes not yet acknowledged, received bytes not yet acknowledged (read or not), and when the
+    // connection was last acknowledged.
     private int _connectionUnacknowledged;
+    private long _connectionOutstanding;
+    private long _lastConnectionWindowUpdate = Stopwatch.GetTimestamp();
     private volatile bool _goingAway;
     private volatile bool _retired;
     private long _idleSince = Stopwatch.GetTimestamp();
@@ -67,10 +78,12 @@ internal sealed class Http2Connection : IHttpConnection
         _encoder = new HpackEncoder(profile.Http2.Hpack?.Indexing ?? HpackIndexing.OkHttp);
 
         // Consumed bytes are acknowledged once half the window is used: per stream, half the initial window; per connection, half that
-        // too (OkHttp) or half the connection window (Chrome).
+        // too (OkHttp) or half the connection window (Chromium).
+        _chromiumFlowControl = profile.Http2.FlowControl == Http2FlowControl.Chromium;
+        _connectionReceiveWindow = profile.Http2.ConnectionWindow;
         _windowUpdateThreshold = Math.Max(1, localInitialWindow / 2);
-        _connectionUpdateThreshold = profile.Http2.FlowControl?.ConnectionUpdate == ConnectionWindowUpdate.HalfOfConnectionWindow
-            ? (int)Math.Clamp(profile.Http2.ConnectionWindow / 2, 1, int.MaxValue)
+        _connectionUpdateThreshold = _chromiumFlowControl
+            ? (int)Math.Clamp(_connectionReceiveWindow / 2, 1, int.MaxValue)
             : _windowUpdateThreshold;
 
         // Streams named by preface PRIORITY frames (Firefox uses 3..13 as grouping nodes) are not available for requests.
@@ -191,20 +204,14 @@ internal sealed class Http2Connection : IHttpConnection
         if (read > 0)
         {
             CreditConnection(read);
-
-            // Also once the server ended the stream, as long as it wasn't reset: OkHttp and Chrome acknowledge everything the app reads.
-            if (stream.Error is null && Interlocked.Add(ref stream.Unacknowledged, read) >= _windowUpdateThreshold)
-            {
-                var increment = Interlocked.Exchange(ref stream.Unacknowledged, 0);
-                if (increment > 0)
-                {
-                    SendControl(Http2Frame.WindowUpdate(stream.Id, increment));
-                }
-            }
+            CreditStream(stream, read);
         }
 
         return read;
     }
+
+    /// <summary>A reader is about to wait for data.</summary>
+    internal void OnReaderWaiting() => RelieveStarvedReader();
 
     /// <summary>Abandons the stream: drops buffered data, fails pending reads, and sends RST_STREAM unless the server already ended it.</summary>
     internal void Reset(Http2Stream stream, Http2ErrorCode code)
@@ -315,6 +322,11 @@ internal sealed class Http2Connection : IHttpConnection
             lock (_flowLock)
             {
                 stream.SendWindow = _peerInitialWindow;
+            }
+
+            lock (_receiveLock)
+            {
+                stream.LastWindowUpdate = Stopwatch.GetTimestamp();
             }
 
             _streams[stream.Id] = stream;
@@ -429,16 +441,86 @@ internal sealed class Http2Connection : IHttpConnection
 
     private void CreditConnection(int bytes)
     {
-        if (bytes <= 0 || Interlocked.Add(ref _connectionUnacknowledged, bytes) < _connectionUpdateThreshold)
+        if (bytes <= 0)
         {
             return;
         }
 
-        var increment = Interlocked.Exchange(ref _connectionUnacknowledged, 0);
-        if (increment > 0)
+        int increment;
+        lock (_receiveLock)
         {
-            SendControl(Http2Frame.WindowUpdate(0, increment));
+            _connectionUnacknowledged += bytes;
+            if (!ShouldAcknowledge(_connectionUnacknowledged, _connectionUpdateThreshold, _lastConnectionWindowUpdate))
+            {
+                return;
+            }
+
+            increment = TakeConnectionCreditLocked();
         }
+
+        SendControl(Http2Frame.WindowUpdate(0, increment));
+    }
+
+    private void CreditStream(Http2Stream stream, int bytes)
+    {
+        // OkHttp acknowledges everything the app reads, even once the server ended the stream; Chromium only while the stream is open.
+        // Neither once it was reset.
+        if (stream.Error is not null || (_chromiumFlowControl && stream.RemoteEnded))
+        {
+            return;
+        }
+
+        int increment;
+        lock (_receiveLock)
+        {
+            stream.Unacknowledged += bytes;
+            if (!ShouldAcknowledge(stream.Unacknowledged, _windowUpdateThreshold, stream.LastWindowUpdate))
+            {
+                return;
+            }
+
+            increment = stream.Unacknowledged;
+            stream.Unacknowledged = 0;
+            stream.LastWindowUpdate = Stopwatch.GetTimestamp();
+        }
+
+        SendControl(Http2Frame.WindowUpdate(stream.Id, increment));
+    }
+
+    /// <summary>OkHttp: at half the window. Chromium: past it, or after 5 seconds without a WINDOW_UPDATE, so a slow reader's server
+    /// doesn't think the stream is idle.</summary>
+    private bool ShouldAcknowledge(int unacknowledged, int threshold, long lastWindowUpdate) => _chromiumFlowControl
+        ? unacknowledged > threshold || Stopwatch.GetElapsedTime(lastWindowUpdate) >= SmallWindowUpdateDelay
+        : unacknowledged >= threshold;
+
+    private int TakeConnectionCreditLocked()
+    {
+        var increment = _connectionUnacknowledged;
+        _connectionUnacknowledged = 0;
+        _connectionOutstanding -= increment;
+        _lastConnectionWindowUpdate = Stopwatch.GetTimestamp();
+        return increment;
+    }
+
+    /// <summary>A reader waiting while responses nobody reads yet fill the connection window would wait forever: the server can't send it
+    /// anything, and what was consumed is below the threshold. Browsers read every response as it comes, so they never get there; the
+    /// only way out is to acknowledge what was consumed now. If nothing was, the app has to read the other responses first.</summary>
+    private void RelieveStarvedReader()
+    {
+        int increment;
+        lock (_receiveLock)
+        {
+            if (_connectionUnacknowledged == 0
+                || _connectionReceiveWindow - _connectionOutstanding >= _localMaxFrameSize
+                || !_streams.Values.Any(static stream => stream.IsWaiting))
+            {
+                return;
+            }
+
+            increment = TakeConnectionCreditLocked();
+        }
+
+        SendControl(Http2Frame.WindowUpdate(0, increment));
     }
 
     private async Task ReadLoopAsync()
@@ -575,6 +657,11 @@ internal sealed class Http2Connection : IHttpConnection
     {
         RequireStream(header);
         var data = Unpad(header, payload, 0);
+        lock (_receiveLock)
+        {
+            _connectionOutstanding += payload.Length;
+        }
+
         CreditConnection(payload.Length - data.Length);
 
         _streams.TryGetValue(header.StreamId, out var stream);
@@ -588,6 +675,8 @@ internal sealed class Http2Connection : IHttpConnection
             stream.OnRemoteEnd();
             RemoveStream(stream);
         }
+
+        RelieveStarvedReader();
     }
 
     private void BeginHeaderBlock(Http2FrameHeader header, ReadOnlySpan<byte> fragment, bool endStream, int pushPromisedStreamId)

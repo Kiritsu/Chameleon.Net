@@ -42,20 +42,19 @@ public enum HpackIndexing
     Nghttp2,
 }
 
-/// <summary>Receive flow control. Streams are acknowledged, as everyone does, once half their window is consumed (SETTINGS_INITIAL_WINDOW_SIZE),
-/// all consumed bytes at once.</summary>
-/// <param name="ConnectionUpdate">When the connection window is acknowledged.</param>
-public sealed record Http2FlowControl(ConnectionWindowUpdate ConnectionUpdate = ConnectionWindowUpdate.HalfOfStreamWindow);
-
-/// <summary>When consumed bytes are acknowledged on the connection (stream 0), all of them at once.</summary>
-public enum ConnectionWindowUpdate
+/// <summary>Receive flow control: when consumed bytes are acknowledged with WINDOW_UPDATE, all of them at once. Streams are acknowledged
+/// against half their window (SETTINGS_INITIAL_WINDOW_SIZE) either way.</summary>
+public enum Http2FlowControl
 {
-    /// <summary>OkHttp: once half the stream window (SETTINGS_INITIAL_WINDOW_SIZE) is consumed. Its connection window is the same size.</summary>
-    HalfOfStreamWindow,
+    /// <summary>OkHttp: a stream, and the connection, once half the stream window is consumed (its connection window is the same size).
+    /// It keeps acknowledging a stream the server ended, for as long as the app reads it.</summary>
+    OkHttp,
 
-    /// <summary>Chrome: once half the connection window is consumed, i.e. half of 65,535 plus the preface's connection WINDOW_UPDATE
-    /// (every 7.5 MiB for Chrome's 15 MiB window, where its 6 MiB streams are acknowledged every 3 MiB).</summary>
-    HalfOfConnectionWindow,
+    /// <summary>Chromium (<c>SpdySession</c>/<c>SpdyStream::IncreaseRecvWindowSize</c>): the connection once more than half the connection
+    /// window is consumed, i.e. half of 65,535 plus the preface's connection WINDOW_UPDATE (7.5 MiB for Chrome's 15 MiB, where its 6 MiB
+    /// streams are acknowledged past 3 MiB); either one sooner if its last WINDOW_UPDATE (or its creation) was 5 seconds ago or more. Not
+    /// a stream once the server ended it.</summary>
+    Chromium,
 }
 
 public abstract record Http2PrefaceFrame;

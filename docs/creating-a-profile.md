@@ -213,10 +213,11 @@ the first frames the client sends after the connection preface:
   It judges cookies and HPACK only against profiles with `Hpack` set (and OkHttp's), so set it,
   even to `new HpackProfile()`, once you have checked the client's header blocks.
 - after a download larger than the connection window, the connection (stream 0) WINDOW_UPDATE
-  increments → `FlowControl: new Http2FlowControl(...)`: about half the stream window
-  (`HalfOfStreamWindow`, OkHttp) or about half the connection window, i.e. 65,535 plus the preface's
-  WINDOW_UPDATE (`HalfOfConnectionWindow`, Chrome: every 7.5 MiB). The capture page downloads 32 MB
-  for this; the Inspector's `--connection-log` keeps every frame a connection carried.
+  increments → `FlowControl`: about half the stream window (`Http2FlowControl.OkHttp`), or just
+  over half the connection window, i.e. 65,535 plus the preface's WINDOW_UPDATE, plus smaller ones
+  after 5 seconds without one (`Http2FlowControl.Chromium`: every 7.5 MiB for Chrome). The capture
+  page downloads 32 MB for this; the Inspector's `--connection-log` keeps every frame a connection
+  carried.
 
 tls.peet.ws (§2) shows all of this without key logging.
 

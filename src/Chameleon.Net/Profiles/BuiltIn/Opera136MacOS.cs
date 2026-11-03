@@ -53,7 +53,7 @@ public static partial class BuiltInProfiles
             },
             FirstStreamId: 1,
             Hpack: new HpackProfile(SplitCookies: true),
-            FlowControl: new Http2FlowControl(ConnectionWindowUpdate.HalfOfConnectionWindow)),
+            FlowControl: Http2FlowControl.Chromium),
         Headers: new HeaderProfile(
             HeaderOrder:
             [

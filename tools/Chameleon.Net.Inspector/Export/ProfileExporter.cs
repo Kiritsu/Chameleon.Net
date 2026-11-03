@@ -202,29 +202,28 @@ internal static class ProfileExporter
         return (http2 with { FlowControl = ExportFlowControl(observations, http2, notes) }, capture.Akamai);
     }
 
-    /// <summary>The rule whose threshold every connection WINDOW_UPDATE follows. The capture page's downloads overflow every browser's
-    /// connection window; other clients may not have received enough to send one.</summary>
+    /// <summary>The rule every connection WINDOW_UPDATE follows, once one of them was for crossing its threshold. The capture page's
+    /// downloads overflow every browser's connection window; other clients may not have received enough to send one.</summary>
     private static Http2FlowControl? ExportFlowControl(IReadOnlyList<Observation> observations, Http2Profile http2, List<string> notes)
     {
-        var increments = observations.Select(static o => o.Connection).Where(static c => c.Http2 is not null).Distinct()
-            .SelectMany(FlowControlRules.ConnectionIncrements)
-            .ToList();
+        var connections = observations.Select(static o => o.Connection).Where(static c => c.Http2 is not null).Distinct().ToList();
+        var verdicts = Enum.GetValues<Http2FlowControl>().Select(rule => (Rule: rule, Verdict: FlowControlRules.Judge(connections, http2, rule))).ToList();
+        var increments = verdicts[0].Verdict.Increments;
         if (increments.Count == 0)
         {
             notes.Add("No connection WINDOW_UPDATE was seen: when the client acknowledges the connection window is unknown (OkHttp's way).");
             return null;
         }
 
-        var matching = Enum.GetValues<ConnectionWindowUpdate>()
-            .Where(rule => FlowControlRules.Matches(increments, FlowControlRules.Threshold(http2, rule)))
-            .ToList();
+        var matching = verdicts.Where(static v => v.Verdict is { Explained: true, AtThreshold: > 0 }).Select(static v => v.Rule).ToList();
         if (matching.Count == 0)
         {
-            notes.Add($"Connection WINDOW_UPDATEs of {string.Join(", ", increments.Distinct().Take(5))} follow no known rule (OkHttp's kept).");
+            notes.Add($"Connection WINDOW_UPDATEs of {string.Join(", ", increments.Distinct().Take(5))} follow no known rule, or none was for " +
+                "crossing its threshold (OkHttp's kept).");
             return null;
         }
 
-        return new Http2FlowControl(matching[0]);
+        return matching[0];
     }
 
     /// <summary>Cookie splitting shows only on an HTTP/2 request carrying two cookies or more: one field each, or one joined field. The
