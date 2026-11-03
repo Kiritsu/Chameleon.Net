@@ -10,6 +10,11 @@ namespace Chameleon.Net.Inspector.Server;
 /// <summary>What one connection showed before and around its requests.</summary>
 internal sealed class ConnectionCapture(int id, IPEndPoint remote)
 {
+    /// <summary>Enough for a capture's downloads many times over; a client flooding frames can't grow a connection past it.</summary>
+    public const int MaxHttp2Events = 1000;
+
+    private readonly List<Http2EventReport> _http2Events = [];
+    private int _reportedHttp2Events;
     private int _requests;
 
     public int Id { get; } = id;
@@ -25,6 +30,37 @@ internal sealed class ConnectionCapture(int id, IPEndPoint remote)
     public Http2ConnectionCapture? Http2 { get; set; }
 
     public int NextRequest() => Interlocked.Increment(ref _requests);
+
+    public void AddHttp2Event(Http2EventReport frame)
+    {
+        lock (_http2Events)
+        {
+            if (_http2Events.Count < MaxHttp2Events)
+            {
+                _http2Events.Add(frame);
+            }
+        }
+    }
+
+    /// <summary>Every frame recorded after the first request.</summary>
+    public List<Http2EventReport> Http2Events()
+    {
+        lock (_http2Events)
+        {
+            return [.. _http2Events];
+        }
+    }
+
+    /// <summary>The frames recorded since the previous call, for the next report.</summary>
+    public List<Http2EventReport> TakeUnreportedHttp2Events()
+    {
+        lock (_http2Events)
+        {
+            var unreported = _http2Events[_reportedHttp2Events..];
+            _reportedHttp2Events = _http2Events.Count;
+            return unreported;
+        }
+    }
 }
 
 /// <param name="Frames">Everything before the first HEADERS, then that HEADERS frame.</param>

@@ -50,7 +50,8 @@ public static partial class BuiltInProfiles
                 [RequestKind.Navigate] = new Http2HeadersPriority(0, 255, true),
             },
             FirstStreamId: 1,
-            Hpack: new HpackProfile(SplitCookies: true)),
+            Hpack: new HpackProfile(SplitCookies: true),
+            FlowControl: Http2FlowControl.Chromium),
         Headers: new HeaderProfile(
             HeaderOrder:
             [

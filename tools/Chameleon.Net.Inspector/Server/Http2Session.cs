@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Globalization;
 using Chameleon.Net.Http.Http2.Hpack;
 using Chameleon.Net.Inspector.Analysis;
@@ -8,7 +9,7 @@ using Chameleon.Net.Profiles;
 namespace Chameleon.Net.Inspector.Server;
 
 /// <summary>A minimal HTTP/2 server that keeps what Kestrel hides: every frame before the first request in order, SETTINGS in the order sent,
-/// HEADERS priority fields and the pseudo-header order.</summary>
+/// HEADERS priority fields and the pseudo-header order, then the frames after it with the DATA bytes sent by then, for flow control.</summary>
 internal sealed class Http2Session(Stream stream, ConnectionCapture connection, Func<RequestCapture, InspectorResponse> respond)
 {
     private const int MaxFrameSize = 16384;
@@ -30,6 +31,14 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
     private readonly List<Http2PrefaceFrame> _preface = [];
     private readonly Dictionary<int, OpenStream> _streams = [];
     private readonly List<PendingBody> _pending = [];
+
+    /// <summary>DATA bytes sent per stream, kept a while after the stream ends: clients may still acknowledge them.</summary>
+    private readonly Dictionary<int, long> _streamDataSent = [];
+
+    /// <summary>Ended streams that still have a counter, oldest first.</summary>
+    private readonly Queue<int> _endedStreams = [];
+    private readonly long _start = Stopwatch.GetTimestamp();
+    private long _connectionDataSent;
     private string? _settings;
     private string? _windowUpdate;
     private bool _sawHeaders;
@@ -59,6 +68,8 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
         {
             if (await stream.ReadAtLeastAsync(header, header.Length, throwOnEndOfStream: false, cancellationToken) < header.Length)
             {
+                // Not a frame: when the client hung up, which tells how long it keeps an idle connection.
+                Record("CLOSED", 0, 0, null);
                 return;
             }
 
@@ -84,7 +95,7 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
         switch (type)
         {
             case 0: // DATA
-                Record("DATA", streamId, flags, $"{data.Length} bytes");
+                Record("DATA", streamId, flags, $"{data.Length} bytes", data.Length);
                 if (data.Length > 0)
                 {
                     await WriteFrameAsync(8, 0, 0, UInt32(data.Length), cancellationToken);
@@ -116,6 +127,13 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
                 }
 
                 _continuation = (streamId, flags, priority, [.. data.AsSpan(offset, data.Length - offset - padding)]);
+
+                // After the first request, as received (trailers too); the first request's HEADERS is reported once decoded.
+                if (_sawHeaders)
+                {
+                    Record("HEADERS", streamId, flags, null);
+                }
+
                 if ((flags & EndHeaders) != 0)
                 {
                     await HeadersCompleteAsync(cancellationToken);
@@ -130,6 +148,11 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
                 }
 
                 pending.Block.AddRange(data);
+                if (_sawHeaders)
+                {
+                    Record("CONTINUATION", streamId, flags, null);
+                }
+
                 if ((flags & EndHeaders) != 0)
                 {
                     await HeadersCompleteAsync(cancellationToken);
@@ -151,8 +174,12 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
                 break;
 
             case 3: // RST_STREAM
-                Record("RST_STREAM", streamId, flags, $"error {BinaryPrimitives.ReadUInt32BigEndian(data)}");
-                _streams.Remove(streamId);
+                Record("RST_STREAM", streamId, flags, $"error {BinaryPrimitives.ReadUInt32BigEndian(data)}", BinaryPrimitives.ReadUInt32BigEndian(data));
+                if (_streams.Remove(streamId))
+                {
+                    StreamEnded(streamId);
+                }
+
                 _pending.RemoveAll(p => p.StreamId == streamId);
                 break;
 
@@ -186,7 +213,7 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
                 break;
 
             case 6: // PING
-                Record("PING", streamId, flags, Convert.ToHexStringLower(data));
+                Record("PING", streamId, flags, Convert.ToHexStringLower(data), flags & Ack);
                 if ((flags & Ack) == 0)
                 {
                     await WriteFrameAsync(6, Ack, 0, data, cancellationToken);
@@ -195,12 +222,13 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
                 break;
 
             case 7: // GOAWAY
-                Record("GOAWAY", streamId, flags, $"last stream {BinaryPrimitives.ReadUInt32BigEndian(data) & int.MaxValue}, error {BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(4))}");
+                Record("GOAWAY", streamId, flags, $"last stream {BinaryPrimitives.ReadUInt32BigEndian(data) & int.MaxValue}, error {BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(4))}",
+                    BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(4)));
                 return false;
 
             case 8: // WINDOW_UPDATE
                 var increment = BinaryPrimitives.ReadUInt32BigEndian(data) & int.MaxValue;
-                Record("WINDOW_UPDATE", streamId, flags, $"increment {increment}");
+                Record("WINDOW_UPDATE", streamId, flags, $"increment {increment}", increment);
                 if (streamId == 0)
                 {
                     _connectionWindow += increment;
@@ -242,12 +270,11 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
             return;
         }
 
-        Record("HEADERS", streamId, flags, priority is null
-            ? $"pseudo-headers {string.Join(',', pseudo.Select(ReportBuilder.PseudoHeaderLetter))}"
-            : $"depends on {priority.DependsOn}, weight {priority.Weight}{(priority.Exclusive ? ", exclusive" : "")}; pseudo-headers {string.Join(',', pseudo.Select(ReportBuilder.PseudoHeaderLetter))}");
-
         if (!_sawHeaders)
         {
+            Record("HEADERS", streamId, flags, priority is null
+                ? $"pseudo-headers {string.Join(',', pseudo.Select(ReportBuilder.PseudoHeaderLetter))}"
+                : $"depends on {priority.DependsOn}, weight {priority.Weight}{(priority.Exclusive ? ", exclusive" : "")}; pseudo-headers {string.Join(',', pseudo.Select(ReportBuilder.PseudoHeaderLetter))}");
             _sawHeaders = true;
             var akamai = string.Join('|',
                 _settings ?? "",
@@ -288,7 +315,7 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
 
         open.Responded = true;
         var response = respond(open.Request);
-        var body = open.Request.Method == "HEAD" ? [] : response.Body;
+        var body = open.Request.Method == "HEAD" ? ReadOnlyMemory<byte>.Empty : response.Body;
         var block = _encoder.Encode(
         [
             new(":status", response.Status.ToString(CultureInfo.InvariantCulture)),
@@ -330,6 +357,8 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
                 var last = chunk == pending.Remaining.Length;
                 await WriteFrameAsync(0, last ? EndStream : (byte)0, pending.StreamId, pending.Remaining[..chunk].ToArray(), cancellationToken);
                 pending.Remaining = pending.Remaining[chunk..];
+                _connectionDataSent += chunk;
+                _streamDataSent[pending.StreamId] = _streamDataSent.GetValueOrDefault(pending.StreamId) + chunk;
                 _connectionWindow -= chunk;
                 open.SendWindow -= chunk;
             }
@@ -338,7 +367,23 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
             {
                 _pending.Remove(pending);
                 _streams.Remove(pending.StreamId);
+                StreamEnded(pending.StreamId);
             }
+        }
+    }
+
+    /// <summary>Only recently ended streams still get WINDOW_UPDATEs: older ones lose their counter, open ones never do.</summary>
+    private void StreamEnded(int streamId)
+    {
+        if (!_streamDataSent.ContainsKey(streamId))
+        {
+            return;
+        }
+
+        _endedStreams.Enqueue(streamId);
+        if (_endedStreams.Count > 64)
+        {
+            _streamDataSent.Remove(_endedStreams.Dequeue());
         }
     }
 
@@ -364,13 +409,10 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
         }
     }
 
-    private void Record(string type, int streamId, byte flags, string? detail)
+    /// <summary>Before the first request, the frame goes into the preface report; after it, into the connection's events.</summary>
+    /// <param name="value">For the events: the WINDOW_UPDATE increment, the error code, 1 for a PING ACK.</param>
+    private void Record(string type, int streamId, byte flags, string? detail, long? value = null)
     {
-        if (_sawHeaders)
-        {
-            return;
-        }
-
         var names = new List<string>();
         if (type is "DATA" or "HEADERS" && (flags & EndStream) != 0)
         {
@@ -397,7 +439,21 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
             names.Add("PRIORITY");
         }
 
-        _frames.Add(new FrameReport(type, streamId, names.Count == 0 ? null : string.Join('|', names), detail));
+        var flagNames = names.Count == 0 ? null : string.Join('|', names);
+        if (!_sawHeaders)
+        {
+            _frames.Add(new FrameReport(type, streamId, flagNames, detail));
+            return;
+        }
+
+        connection.AddHttp2Event(new Http2EventReport(
+            Math.Round(Stopwatch.GetElapsedTime(_start).TotalMilliseconds, 1),
+            type,
+            streamId,
+            flagNames,
+            value,
+            streamId == 0 ? null : _streamDataSent.GetValueOrDefault(streamId),
+            _connectionDataSent));
     }
 
     private async Task WriteFrameAsync(byte type, byte flags, int streamId, byte[] payload, CancellationToken cancellationToken)
@@ -458,12 +514,13 @@ internal sealed class Http2Session(Stream stream, ConnectionCapture connection, 
         public bool Responded { get; set; }
     }
 
-    private sealed class PendingBody(int streamId, byte[] body)
+    private sealed class PendingBody(int streamId, ReadOnlyMemory<byte> body)
     {
         public int StreamId { get; } = streamId;
         public ReadOnlyMemory<byte> Remaining { get; set; } = body;
     }
 }
 
+/// <param name="Body">Possibly a slice of a buffer shared by every response, never written to.</param>
 /// <param name="Headers">Extra response headers (Set-Cookie for the capture page).</param>
-internal sealed record InspectorResponse(int Status, string ContentType, byte[] Body, IReadOnlyList<KeyValuePair<string, string>>? Headers = null);
+internal sealed record InspectorResponse(int Status, string ContentType, ReadOnlyMemory<byte> Body, IReadOnlyList<KeyValuePair<string, string>>? Headers = null);

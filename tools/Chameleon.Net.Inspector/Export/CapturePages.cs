@@ -1,7 +1,8 @@
 namespace Chameleon.Net.Inspector.Export;
 
-/// <summary>The browser walk-through behind <c>/capture</c>: a navigation and fetch() GET and POST over HTTP/2, a WebSocket, then a
-/// navigation and a fetch() over plain HTTP/1.1 (for header casing and HTTP/1.1-only headers), ending on the exported profile.</summary>
+/// <summary>The browser walk-through behind <c>/capture</c>: a navigation and fetch() GET and POST over HTTP/2, downloads and an idle period
+/// for its flow control and keepalive, WebSockets, then a navigation and a fetch() over plain HTTP/1.1 (for header casing and
+/// HTTP/1.1-only headers), ending on the exported profile.</summary>
 internal static class CapturePages
 {
     public const string CookieName = "chameleon_capture";
@@ -22,6 +23,16 @@ internal static class CapturePages
           step('fetch() GET');
           await fetch('/capture/post', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"capture":true}' });
           step('fetch() POST');
+          // Downloads past the stream and connection windows, then a request after an idle period: the client's WINDOW_UPDATEs and
+          // any PING it sends before reusing the connection.
+          for (const size of [1048576, 33554432]) {
+            await (await fetch(`/capture/bytes/${size}`)).arrayBuffer();
+            step(`Download of ${size / 1048576} MB`);
+          }
+          step('Idle for 20 seconds…');
+          await new Promise(resolve => setTimeout(resolve, 20000));
+          await fetch('/capture/after-idle');
+          step('fetch() after idling');
           // Three WebSockets, each a new TLS connection: enough to see Chrome's extension shuffle and the GREASE ECH variants.
           for (let i = 1; i <= 3; i++) {
             await new Promise(resolve => {

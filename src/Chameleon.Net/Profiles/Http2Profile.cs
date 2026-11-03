@@ -6,14 +6,19 @@ namespace Chameleon.Net.Profiles;
 /// <param name="FirstStreamId">Stream id of the first request on a connection (odd). Firefox starts at 3; everyone else at 1.
 /// Preface PRIORITY frames push it further: requests never reuse a stream they name.</param>
 /// <param name="Hpack">How header blocks are encoded. Null: OkHttp's way.</param>
+/// <param name="FlowControl">When received data is acknowledged with WINDOW_UPDATE. Null: OkHttp's way.</param>
 public sealed record Http2Profile(
     IReadOnlyList<Http2PrefaceFrame> Preface,
     IReadOnlyList<PseudoHeader> PseudoHeaderOrder,
     Http2HeadersPriority? HeadersPriority,
     IReadOnlyDictionary<RequestKind, Http2HeadersPriority>? HeadersPriorityOverrides = null,
     uint FirstStreamId = 1,
-    HpackProfile? Hpack = null)
+    HpackProfile? Hpack = null,
+    Http2FlowControl? FlowControl = null)
 {
+    /// <summary>The connection receive window the preface sets up: the initial 65,535 bytes plus its connection WINDOW_UPDATEs.</summary>
+    public long ConnectionWindow => 65535 + Preface.OfType<Http2WindowUpdateFrame>().Sum(static frame => (long)frame.Increment);
+
     public Http2HeadersPriority? PriorityFor(RequestKind kind) =>
         HeadersPriorityOverrides is not null && HeadersPriorityOverrides.TryGetValue(kind, out var priority) ? priority : HeadersPriority;
 }
@@ -35,6 +40,21 @@ public enum HpackIndexing
     /// content-length, etag, if-modified-since, if-none-match, location, age and set-cookie are literals without indexing; the whole
     /// static table is matched with values.</summary>
     Nghttp2,
+}
+
+/// <summary>Receive flow control: when consumed bytes are acknowledged with WINDOW_UPDATE, all of them at once. Streams are acknowledged
+/// against half their window (SETTINGS_INITIAL_WINDOW_SIZE) either way.</summary>
+public enum Http2FlowControl
+{
+    /// <summary>OkHttp: a stream, and the connection, once half the stream window is consumed (its connection window is the same size).
+    /// It keeps acknowledging a stream the server ended, for as long as the app reads it.</summary>
+    OkHttp,
+
+    /// <summary>Chromium (<c>SpdySession</c>/<c>SpdyStream::IncreaseRecvWindowSize</c>): the connection once more than half the connection
+    /// window is consumed, i.e. half of 65,535 plus the preface's connection WINDOW_UPDATE (7.5 MiB for Chrome's 15 MiB, where its 6 MiB
+    /// streams are acknowledged past 3 MiB); either one sooner if its last WINDOW_UPDATE (or its creation) was 5 seconds ago or more. Not
+    /// a stream once the server ended it.</summary>
+    Chromium,
 }
 
 public abstract record Http2PrefaceFrame;
