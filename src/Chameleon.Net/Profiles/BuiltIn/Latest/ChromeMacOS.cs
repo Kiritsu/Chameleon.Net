@@ -2,6 +2,6 @@ namespace Chameleon.Net.Profiles;
 
 public static partial class BuiltInProfiles
 {
-    /// <summary>The latest built-in Chrome on MacOS: <see cref="Chrome156MacOS"/>. Moves to each new version.</summary>
-    public static ClientProfile ChromeMacOS => Chrome156MacOS;
+    /// <summary>The latest built-in Chrome on MacOS: <see cref="Chrome157MacOS"/>. Moves to each new version.</summary>
+    public static ClientProfile ChromeMacOS => Chrome157MacOS;
 }
